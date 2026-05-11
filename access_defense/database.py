@@ -334,12 +334,12 @@ def seed_demo_data(database_connection: sqlite3.Connection) -> None:
     ]
     
     for username, role_name, plain_password in demo_users_data:
-        conn.execute(
+        database_connection.execute(
             """
             INSERT OR IGNORE INTO users (username, role, password_hash, enabled, created_at)
             VALUES (?, ?, ?, 1, ?)
             """,
-            (username, role, hash_password(password), now),
+            (username, role_name, hash_password(plain_password), current_timestamp),
         )
 
     permissions = [
@@ -357,7 +357,7 @@ def seed_demo_data(database_connection: sqlite3.Connection) -> None:
         ("auditor", "transacoes", "READ", 1),
         ("auditor", "salarios", "READ", 1),
     ]
-    conn.executemany(
+    database_connection.executemany(
         """
         INSERT OR REPLACE INTO permissions (role, table_name, operation, allowed)
         VALUES (?, ?, ?, ?)
@@ -372,7 +372,7 @@ def seed_demo_data(database_connection: sqlite3.Connection) -> None:
         ("Diego Alves", "diego@example.com", "baixo"),
         ("Elisa Rocha", "elisa@example.com", "medio"),
     ]
-    conn.executemany(
+    database_connection.executemany(
         """
         INSERT OR IGNORE INTO clientes (nome, email, risco)
         VALUES (?, ?, ?)
@@ -381,13 +381,13 @@ def seed_demo_data(database_connection: sqlite3.Connection) -> None:
     )
 
     transacoes = [
-        (1, 320.50, "aprovada", now),
-        (2, 980.00, "analise", now),
-        (3, 15400.00, "bloqueada", now),
-        (4, 77.90, "aprovada", now),
-        (5, 4200.00, "analise", now),
+        (1, 320.50, "aprovada", current_timestamp),
+        (2, 980.00, "analise", current_timestamp),
+        (3, 15400.00, "bloqueada", current_timestamp),
+        (4, 77.90, "aprovada", current_timestamp),
+        (5, 4200.00, "analise", current_timestamp),
     ]
-    conn.executemany(
+    database_connection.executemany(
         """
         INSERT OR IGNORE INTO transacoes (id, cliente_id, valor, status, created_at)
         VALUES (?, ?, ?, ?, ?)
@@ -400,7 +400,7 @@ def seed_demo_data(database_connection: sqlite3.Connection) -> None:
         ("Bruno Costa", 6400.00, "Operacoes"),
         ("Carla Nunes", 9100.00, "Seguranca"),
     ]
-    conn.executemany(
+    database_connection.executemany(
         """
         INSERT OR IGNORE INTO salarios (id, colaborador, salario, departamento)
         VALUES (?, ?, ?, ?)
@@ -409,11 +409,11 @@ def seed_demo_data(database_connection: sqlite3.Connection) -> None:
     )
 
     ip_history = [
-        ("admin", "10.0.0.10", now, now, 12),
-        ("analista", "10.0.0.12", now, now, 18),
-        ("auditor", "10.0.0.30", now, now, 8),
+        ("admin", "10.0.0.10", current_timestamp, current_timestamp, 12),
+        ("analista", "10.0.0.12", current_timestamp, current_timestamp, 18),
+        ("auditor", "10.0.0.30", current_timestamp, current_timestamp, 8),
     ]
-    conn.executemany(
+    database_connection.executemany(
         """
         INSERT OR IGNORE INTO user_ip_history
             (username, ip_address, first_seen, last_seen, total_accesses)

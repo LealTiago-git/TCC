@@ -52,7 +52,8 @@ access_defense/
 ├── gateway.py               # Gateway de controle de acesso (Auth + Authz)
 ├── agents.py                # Interface com LLMs (Ollama/OpenRouter)
 ├── defender.py              # Monitor defensivo e resposta a incidentes
-└── cli.py                   # Interface de linha de comando (CLI)
+├── cli.py                   # Interface de linha de comando (CLI)
+└── dashboard.py             # Dashboard interativa (Streamlit)
 ```
 
 ### Módulos Principais
@@ -151,6 +152,19 @@ access_defense/
   - `--ai off|gemma3|qwen2.5|both`: Seleção de IA
   - `--mode injection|ddos|brute-force|buffer-overflow|privilege-escalation`: Tipo de ataque
   - `--once`: Executa uma única vez (útil em testes)
+
+#### `dashboard.py`
+- **Função**: Visualização interativa do sistema em tempo real
+- **Framework**: Streamlit (web app Python nativo)
+- **Abas disponíveis**:
+  - **KPIs**: 6 métricas principais (acessos, alertas, IPs bloqueados, etc)
+  - **Logs de Acesso**: Tabela filtrável com gráficos de operações e timeline
+  - **Alertas**: Distribuição por severidade, status, timeline
+  - **Anomalias**: Histograma, box plot, scatter plot de scores
+  - **Resposta Defensiva**: Ações executadas, tipos, timeline
+  - **Performance de IA**: Timing e taxa de sucesso (Gemma 3 vs Qwen 2.5)
+- **Comando**: `streamlit run access_defense/dashboard.py`
+- **Acesso**: http://localhost:8501 (automaticamente no navegador)
 
 ## Como Rodar - Guia Completo
 
@@ -259,6 +273,50 @@ python -m access_defense.cli show-ai-results --agent gemma3
 # Ver todas as sessões
 python -m access_defense.cli show-ai-results --all-sessions
 ```
+
+### Dashboard Interativa
+
+Visualize em **tempo real** todos os eventos, alertas e métricas do sistema com a dashboard Streamlit:
+
+```powershell
+# Instalar dependências (execute UMA VEZ)
+pip install -r requirements.txt
+
+# Opção 1: Executar direto
+streamlit run access_defense/dashboard.py
+
+# Opção 2: Usar script helper
+powershell -ExecutionPolicy Bypass -File run_dashboard.ps1
+```
+
+**O que você vê na dashboard:**
+- 📊 KPIs em destaque (acessos, alertas, IPs bloqueados, score médio)
+- 📝 **Aba 1 - Logs**: Histórico de acessos com filtros por usuário e severidade
+- ⚠️ **Aba 2 - Alertas**: Timeline e distribuição de eventos de segurança
+- 📈 **Aba 3 - Anomalias**: Distribuição de scores, box plots, scatter plots
+- 🛡️ **Aba 4 - Resposta Defensiva**: Ações executadas (bloqueios, rate-limiting)
+- 🤖 **Aba 5 - Performance de IA**: Comparação Gemma 3 vs Qwen 2.5 (timing, taxa de sucesso)
+
+**Exemplo: Monitorar em tempo real**
+
+Terminal 1 - Dashboard:
+```powershell
+streamlit run access_defense/dashboard.py
+# Abre em http://localhost:8501
+```
+
+Terminal 2 - Simule eventos:
+```powershell
+$env:AGENT_PROVIDER="ollama"
+$env:OLLAMA_OPENAI_BASE_URL="http://localhost:11434/v1"
+$env:OLLAMA_API_KEY="ollama"
+
+python -m access_defense.cli simulate --ai gemma3
+```
+
+✨ **A dashboard atualiza em tempo real enquanto você executa comandos!**
+
+Para documentação completa: Ver [USANDO_DASHBOARD.md](USANDO_DASHBOARD.md)
 
 ### Limpeza/Reset
 

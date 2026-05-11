@@ -1,0 +1,53 @@
+# Dependências do TCC - Sistema de Defesa Contra Acessos Anômalos
+# 
+# Core:
+#   - Para operações de banco de dados: sqlite3 (nativo do Python)
+#   - Para manipulação de dados: pandas
+#
+# API e LLM:
+#   - openai: Cliente para APIs OpenAI e compatíveis (Ollama, OpenRouter)
+#
+# Dashboard:
+#   - streamlit: Framework para criar dashboards web interativas
+#   - plotly: Biblioteca de gráficos interativos
+#
+# CLI:
+#   - click: Framework para interfaces de linha de comando
+#   - rich: Formatação colorida e tabelas no terminal
+#
+# Segurança:
+#   - cryptography: Funções criptográficas (suporte para futuras melhorias)
+
+# ============================================================================
+# DEPENDÊNCIAS CORE
+# ============================================================================
+
+pandas>=2.0.0
+openai>=1.0.0
+
+# ============================================================================
+# DASHBOARD E VISUALIZAÇÃO
+# ============================================================================
+
+streamlit>=1.28.0
+plotly>=5.17.0
+
+# ============================================================================
+# CLI E INTERFACE
+# ============================================================================
+
+click>=8.1.0
+rich>=13.5.0
+
+# ============================================================================
+# SEGURANÇA (OPCIONAL - para futuras melhorias)
+# ============================================================================
+
+cryptography>=41.0.0
+
+# ============================================================================
+# DESENVOLVIMENTO E TESTES (OPCIONAL)
+# ============================================================================
+
+pytest>=7.4.0
+pytest-cov>=4.1.0

@@ -1124,6 +1124,9 @@ def _shorten(value: str, width: int) -> str:
     if len(collapsed_value) <= width:
         return collapsed_value
     return textwrap.shorten(collapsed_value, width=width, placeholder="...")
+#   return textwrap.fill(collapsed_value, width=width, placeholder="...")
+#
+#   "textwrap.fill" Para poder ler a analise completa em vez de cortar com reticencias, mas pode bagunçar a formatação da tabela dependendo do conteúdo.
 
 
 if __name__ == "__main__":
