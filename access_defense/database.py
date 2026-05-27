@@ -259,6 +259,44 @@ def init_db(
                 FOREIGN KEY (access_log_id) REFERENCES access_logs(id)
             );
 
+            CREATE TABLE IF NOT EXISTS locked_users (
+                username TEXT PRIMARY KEY,
+                reason TEXT NOT NULL,
+                source_log_id INTEGER,
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                FOREIGN KEY (source_log_id) REFERENCES access_logs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                arguments TEXT NOT NULL,
+                target_log_id INTEGER,
+                reason TEXT,
+                applied INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                FOREIGN KEY (target_log_id) REFERENCES access_logs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS benchmark_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                backend TEXT NOT NULL,
+                workload TEXT NOT NULL,
+                iterations INTEGER NOT NULL,
+                avg_ms REAL NOT NULL,
+                min_ms REAL NOT NULL,
+                max_ms REAL NOT NULL,
+                p95_ms REAL NOT NULL,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                notes TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_access_logs_created_at
                 ON access_logs(created_at);
 

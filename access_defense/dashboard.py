@@ -32,10 +32,23 @@ Instruções de uso:
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 import sqlite3
 from pathlib import Path
+
+# ============================================================================
+# CONSTANTES
+# ============================================================================
+
+SEVERITY_LABELS = ["normal", "low", "medium", "high", "critical"]
+SEVERITY_BINS = [-1, 14, 34, 59, 84, 100]
+SEVERITY_COLORS = {
+    "normal": "#74c0fc",
+    "low": "#69db7c",
+    "medium": "#ffd43b",
+    "high": "#ff922b",
+    "critical": "#ff6b6b",
+}
 
 # ============================================================================
 # CONFIGURAÇÃO INICIAL DA PÁGINA
@@ -137,14 +150,23 @@ def get_access_logs(conn, limit=100, username_filter=None, severity_filter=None)
         return pd.DataFrame()
     
     df = pd.DataFrame([dict(r) for r in results])
-    
+
+    # Derivar severity a partir de anomaly_score (schema só tem score)
+    if 'severity' not in df.columns:
+        score = df['anomaly_score'].fillna(0).astype(int)
+        df['severity'] = pd.cut(
+            score,
+            bins=SEVERITY_BINS,
+            labels=SEVERITY_LABELS,
+        ).astype(str)
+
     # Aplicar filtros
     if username_filter:
         df = df[df['username'] == username_filter]
-    
+
     if severity_filter:
         df = df[df['severity'].isin(severity_filter)]
-    
+
     return df
 
 
@@ -158,7 +180,8 @@ def get_security_alerts(conn, status_filter=None, limit=50):
         limit (int): Número máximo de registros
     
     Retorna:
-        pd.DataFrame: Alertas com colunas: id, severity, message, created_at, status
+        pd.DataFrame: Alertas com colunas: id, created_at, access_log_id, severity,
+                      status, source, summary, verdict
     """
     query = "SELECT * FROM security_alerts ORDER BY created_at DESC LIMIT ?"
     params = [limit]
@@ -185,7 +208,10 @@ def get_incident_responses(conn, limit=50):
         limit (int): Número máximo de registros
     
     Retorna:
-        pd.DataFrame: Respostas com colunas: id, action_type, target, status, created_at
+        pd.DataFrame: Respostas com colunas: id, created_at, monitor_session_id,
+                      alert_id, access_log_id, agent_name, attack_type, severity,
+                      ai_message, planned_steps, executed_actions,
+                      service_status_after, shutdown_requested
     """
     query = "SELECT * FROM incident_response_logs ORDER BY created_at DESC LIMIT ?"
     params = [limit]
@@ -206,8 +232,11 @@ def get_ai_agent_logs(conn):
         conn (sqlite3.Connection): Conexão com banco
     
     Retorna:
-        pd.DataFrame: Logs de IA com colunas: id, agent_model, duration_ms, success, 
-                      response_json, created_at
+        pd.DataFrame: Logs de IA com colunas: id, created_at, session_id,
+                      access_log_id, agent_name, model, provider_url, started_at,
+                      finished_at, duration_ms, session_case_number,
+                      session_total_duration_ms, session_average_duration_ms,
+                      success, error, result
     """
     query = "SELECT * FROM ai_agent_logs ORDER BY created_at DESC LIMIT 100"
     results = conn.cursor().execute(query).fetchall()
@@ -216,26 +245,6 @@ def get_ai_agent_logs(conn):
         return pd.DataFrame()
     
     return pd.DataFrame([dict(r) for r in results])
-
-
-def severity_color(severity):
-    """
-    Retorna cor HTML para cada nível de severidade.
-    
-    Parâmetros:
-        severity (str): Nome da severidade (normal, low, medium, high, critical)
-    
-    Retorna:
-        str: Código de cor hex
-    """
-    colors = {
-        "normal": "#74c0fc",      # Azul claro
-        "low": "#69db7c",         # Verde
-        "medium": "#ffd43b",      # Amarelo
-        "high": "#ff922b",        # Laranja
-        "critical": "#ff6b6b",    # Vermelho
-    }
-    return colors.get(severity, "#cccccc")
 
 
 def get_summary_stats(conn):
@@ -325,28 +334,28 @@ st.markdown("### 📊 Resumo do Sistema")
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 
 with col1:
-    st.metric("📝 Acessos Totais", stats["total_accesses"], 
-              delta=None, help="Total de operações registradas")
+    st.metric("📝 Acessos Totais", stats["total_accesses"],
+              help="Total de operações registradas")
 
 with col2:
     st.metric("⚠️ Alertas Abertos", stats["open_alerts"],
-              delta=None, help="Alertas de segurança pendentes")
+              help="Alertas de segurança pendentes")
 
 with col3:
     st.metric("🔴 Críticos", stats["critical_count"],
-              delta=None, help="Alertas de severidade crítica")
+              help="Alertas de severidade crítica")
 
 with col4:
     st.metric("👥 Usuários", stats["unique_users"],
-              delta=None, help="Usuários únicos no sistema")
+              help="Usuários únicos no sistema")
 
 with col5:
     st.metric("🚫 IPs Bloqueados", stats["blocked_ips"],
-              delta=None, help="Endereços IP em quarentena")
+              help="Endereços IP em quarentena")
 
 with col6:
     st.metric("📈 Score Médio", f"{stats['avg_anomaly_score']}/100",
-              delta=None, help="Anomalia média detectada")
+              help="Anomalia média detectada")
 
 st.divider()
 
@@ -354,12 +363,14 @@ st.divider()
 # ABAS PRINCIPAIS
 # ============================================================================
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📝 Logs de Acesso",
     "⚠️ Alertas",
     "📊 Anomalias",
     "🛡️ Resposta Defensiva",
-    "🤖 Performance de IA"
+    "🤖 Performance de IA",
+    "🧠 Agente IA (ao vivo)",
+    "⚡ Benchmark PG vs Mongo"
 ])
 
 # ========== TAB 1: LOGS DE ACESSO ==========
@@ -378,7 +389,7 @@ with tab1:
     with col2:
         severity_filter = st.multiselect(
             "Filtrar por Severidade:",
-            ["normal", "low", "medium", "high", "critical"],
+            SEVERITY_LABELS,
             default=["high", "critical"],
         )
     
@@ -439,7 +450,7 @@ with tab1:
         # Gráfico: Timeline de acessos por severidade
         logs_df["created_at"] = pd.to_datetime(logs_df["created_at"])
         hourly_counts = logs_df.groupby(
-            [pd.Grouper(key="created_at", freq="1H"), "severity"]
+            [pd.Grouper(key="created_at", freq="1h"), "severity"]
         ).size().reset_index(name="count")
         
         fig_timeline = px.line(
@@ -496,13 +507,7 @@ with tab2:
                 title="Alertas por Severidade",
                 labels={"x": "Severidade", "y": "Quantidade"},
                 color=severity_counts.index,
-                color_discrete_map={
-                    "normal": "#74c0fc",
-                    "low": "#69db7c",
-                    "medium": "#ffd43b",
-                    "high": "#ff922b",
-                    "critical": "#ff6b6b",
-                }
+                color_discrete_map=SEVERITY_COLORS,
             )
             st.plotly_chart(fig_sev, use_container_width=True)
         
@@ -520,7 +525,7 @@ with tab2:
         # Timeline de alertas
         alerts_df["created_at"] = pd.to_datetime(alerts_df["created_at"])
         hourly_alerts = alerts_df.groupby(
-            pd.Grouper(key="created_at", freq="6H")
+            pd.Grouper(key="created_at", freq="6h")
         ).size().reset_index(name="count")
         
         fig_alert_timeline = px.line(
@@ -560,21 +565,14 @@ with tab3:
         
         with col2:
             # Box plot por severidade
-            severity_order = ["normal", "low", "medium", "high", "critical"]
             fig_box = px.box(
                 logs_df,
                 x="severity",
                 y="anomaly_score",
                 title="Score por Severidade",
-                category_orders={"severity": severity_order},
+                category_orders={"severity": SEVERITY_LABELS},
                 color="severity",
-                color_discrete_map={
-                    "normal": "#74c0fc",
-                    "low": "#69db7c",
-                    "medium": "#ffd43b",
-                    "high": "#ff922b",
-                    "critical": "#ff6b6b",
-                }
+                color_discrete_map=SEVERITY_COLORS,
             )
             st.plotly_chart(fig_box, use_container_width=True)
         
@@ -588,13 +586,7 @@ with tab3:
             size="anomaly_score",
             title="Anomalias ao Longo do Dia",
             labels={"hour": "Hora do Dia", "anomaly_score": "Score"},
-            color_discrete_map={
-                "normal": "#74c0fc",
-                "low": "#69db7c",
-                "medium": "#ffd43b",
-                "high": "#ff922b",
-                "critical": "#ff6b6b",
-            }
+            color_discrete_map=SEVERITY_COLORS,
         )
         st.plotly_chart(fig_scatter, use_container_width=True)
         
@@ -644,7 +636,7 @@ with tab4:
         # Tabela de respostas
         st.dataframe(
             responses_df[[
-                "id", "action_type", "target", "status", "created_at"
+                "id", "attack_type", "agent_name", "service_status_after", "created_at"
             ]].sort_values("created_at", ascending=False),
             use_container_width=True,
             height=300
@@ -654,7 +646,7 @@ with tab4:
         
         with col1:
             # Tipo de ações executadas
-            action_counts = responses_df["action_type"].value_counts()
+            action_counts = responses_df["attack_type"].value_counts()
             fig_actions = px.pie(
                 values=action_counts.values,
                 names=action_counts.index,
@@ -662,31 +654,31 @@ with tab4:
                 color_discrete_sequence=px.colors.qualitative.Set3
             )
             st.plotly_chart(fig_actions, use_container_width=True)
-        
+
         with col2:
             # Status das respostas
-            status_counts = responses_df["status"].value_counts()
+            status_counts = responses_df["service_status_after"].value_counts()
             fig_resp_status = px.bar(
                 x=status_counts.index,
                 y=status_counts.values,
                 title="Status das Respostas",
                 labels={"x": "Status", "y": "Quantidade"},
                 color=status_counts.index,
-                color_discrete_sequence=px.colors.qualitative.Paired
+                color_discrete_sequence=px.colors.qualitative.Set1
             )
             st.plotly_chart(fig_resp_status, use_container_width=True)
         
         # Timeline de ações defensivas
         responses_df["created_at"] = pd.to_datetime(responses_df["created_at"])
         defense_timeline = responses_df.groupby(
-            [pd.Grouper(key="created_at", freq="6H"), "action_type"]
+            [pd.Grouper(key="created_at", freq="6h"), "attack_type"]
         ).size().reset_index(name="count")
-        
+
         fig_defense = px.line(
             defense_timeline,
             x="created_at",
             y="count",
-            color="action_type",
+            color="attack_type",
             title="Timeline de Ações Defensivas",
             markers=True,
             labels={"created_at": "Hora", "count": "Quantidade"}
@@ -705,7 +697,7 @@ with tab5:
     if not ai_logs_df.empty:
         # Tabela de execuções
         display_ai = ai_logs_df[[
-            "agent_model", "duration_ms", "success", "created_at"
+            "agent_name", "duration_ms", "success", "created_at"
         ]].copy()
         
         st.dataframe(
@@ -720,35 +712,35 @@ with tab5:
             # Tempo de resposta por modelo
             fig_timing = px.box(
                 ai_logs_df,
-                x="agent_model",
+                x="agent_name",
                 y="duration_ms",
                 title="Distribuição de Tempo de Resposta",
-                labels={"agent_model": "Modelo", "duration_ms": "Tempo (ms)"},
-                color="agent_model"
+                labels={"agent_name": "Modelo", "duration_ms": "Tempo (ms)"},
+                color="agent_name"
             )
             st.plotly_chart(fig_timing, use_container_width=True)
         
         with col2:
             # Taxa de sucesso por modelo
-            success_rate = ai_logs_df.groupby("agent_model")["success"].apply(
+            success_rate = ai_logs_df.groupby("agent_name")["success"].apply(
                 lambda x: (x.sum() / len(x) * 100)
             ).reset_index()
-            success_rate.columns = ["agent_model", "success_rate"]
+            success_rate.columns = ["agent_name", "success_rate"]
             
             fig_success = px.bar(
                 success_rate,
-                x="agent_model",
+                x="agent_name",
                 y="success_rate",
                 title="Taxa de Sucesso por Modelo (%)",
-                labels={"agent_model": "Modelo", "success_rate": "Taxa (%)"},
-                color="agent_model",
+                labels={"agent_name": "Modelo", "success_rate": "Taxa (%)"},
+                color="agent_name",
                 range_y=[0, 100]
             )
             st.plotly_chart(fig_success, use_container_width=True)
         
         # Comparação de modelos
         st.markdown("#### Comparação de Performance")
-        comparison = ai_logs_df.groupby("agent_model").agg({
+        comparison = ai_logs_df.groupby("agent_name").agg({
             "duration_ms": ["mean", "min", "max", "count"],
             "success": lambda x: f"{(x.sum()/len(x)*100):.1f}%"
         }).round(1)
@@ -757,6 +749,213 @@ with tab5:
     
     else:
         st.info("ℹ️ Nenhuma execução de IA registrada")
+
+# ========== TAB 6: AGENTE IA AO VIVO ==========
+with tab6:
+    st.markdown("### Agente IA Autônomo — Decisões em Tempo Real")
+    st.caption(
+        "Tool-calls executados pelo `agent_loop.py`. Cada linha é uma ação "
+        "decidida pelo LLM via function-calling."
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        n_actions = conn.execute(
+            "SELECT COUNT(*) AS c FROM ai_actions"
+        ).fetchone()["c"]
+        st.metric("🧠 Ações totais", n_actions)
+    with col2:
+        n_applied = conn.execute(
+            "SELECT COUNT(*) AS c FROM ai_actions WHERE applied=1"
+        ).fetchone()["c"]
+        st.metric("✅ Aplicadas", n_applied)
+    with col3:
+        n_blocked = conn.execute(
+            "SELECT COUNT(*) AS c FROM blocked_ips"
+        ).fetchone()["c"]
+        st.metric("🚫 IPs bloqueados", n_blocked)
+    with col4:
+        try:
+            n_locked = conn.execute(
+                "SELECT COUNT(*) AS c FROM locked_users"
+            ).fetchone()["c"]
+        except sqlite3.OperationalError:
+            n_locked = 0
+        st.metric("🔒 Usuários travados", n_locked)
+
+    st.markdown("#### Histórico de tool-calls")
+    actions_rows = conn.execute(
+        """
+        SELECT id, created_at, agent_name, tool_name, arguments,
+               applied, error, reason
+        FROM ai_actions
+        ORDER BY id DESC
+        LIMIT 200
+        """
+    ).fetchall()
+    if actions_rows:
+        actions_df = pd.DataFrame([dict(r) for r in actions_rows])
+        st.dataframe(actions_df, use_container_width=True, height=300)
+
+        colA, colB = st.columns(2)
+        with colA:
+            tool_counts = actions_df["tool_name"].value_counts()
+            fig_tools = px.pie(
+                values=tool_counts.values,
+                names=tool_counts.index,
+                title="Distribuição de Tool Calls",
+                color_discrete_sequence=px.colors.qualitative.Bold,
+            )
+            st.plotly_chart(fig_tools, use_container_width=True)
+        with colB:
+            agent_counts = actions_df["agent_name"].value_counts()
+            fig_agents = px.bar(
+                x=agent_counts.index,
+                y=agent_counts.values,
+                title="Ações por Modelo",
+                labels={"x": "Modelo", "y": "Quantidade"},
+                color=agent_counts.index,
+            )
+            st.plotly_chart(fig_agents, use_container_width=True)
+
+        actions_df["created_at"] = pd.to_datetime(actions_df["created_at"])
+        timeline = actions_df.groupby(
+            [pd.Grouper(key="created_at", freq="1min"), "tool_name"]
+        ).size().reset_index(name="count")
+        fig_tl = px.line(
+            timeline,
+            x="created_at",
+            y="count",
+            color="tool_name",
+            title="Timeline de Ações do Agente",
+            markers=True,
+        )
+        st.plotly_chart(fig_tl, use_container_width=True)
+    else:
+        st.info("ℹ️ Nenhuma ação do agente registrada. Rode `python -m access_defense.agent_loop`.")
+
+    st.markdown("#### IPs bloqueados (estado atual)")
+    blocked_rows = conn.execute(
+        "SELECT ip_address, reason, created_at, expires_at FROM blocked_ips ORDER BY created_at DESC LIMIT 100"
+    ).fetchall()
+    if blocked_rows:
+        st.dataframe(
+            pd.DataFrame([dict(r) for r in blocked_rows]),
+            use_container_width=True,
+            height=200,
+        )
+    else:
+        st.caption("Nenhum IP bloqueado.")
+
+    st.markdown("#### Usuários travados (estado atual)")
+    try:
+        locked_rows = conn.execute(
+            "SELECT username, reason, created_at, expires_at FROM locked_users ORDER BY created_at DESC LIMIT 100"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        locked_rows = []
+    if locked_rows:
+        st.dataframe(
+            pd.DataFrame([dict(r) for r in locked_rows]),
+            use_container_width=True,
+            height=200,
+        )
+    else:
+        st.caption("Nenhum usuário travado.")
+
+# ========== TAB 7: BENCHMARK POSTGRES vs MONGO ==========
+with tab7:
+    st.markdown("### Benchmark de Desempenho — Postgres vs MongoDB")
+    st.caption(
+        "Resultados de `python -m access_defense.benchmark`. Compara latência "
+        "média e p95 por workload."
+    )
+
+    bench_rows = conn.execute(
+        """
+        SELECT id, created_at, run_id, backend, workload, iterations,
+               avg_ms, min_ms, max_ms, p95_ms, error_count, notes
+        FROM benchmark_runs
+        ORDER BY id DESC
+        LIMIT 500
+        """
+    ).fetchall()
+
+    if not bench_rows:
+        st.info(
+            "ℹ️ Nenhum benchmark rodado. Execute: "
+            "`python -m access_defense.benchmark --iterations 100`"
+        )
+    else:
+        bench_df = pd.DataFrame([dict(r) for r in bench_rows])
+
+        # Filtros
+        col1, col2 = st.columns(2)
+        with col1:
+            run_options = ["Todos"] + sorted(bench_df["run_id"].unique().tolist(), reverse=True)
+            selected_run = st.selectbox("Run ID:", run_options)
+        with col2:
+            workloads = sorted(bench_df["workload"].unique().tolist())
+            selected_workloads = st.multiselect(
+                "Workloads:", workloads, default=workloads
+            )
+
+        view = bench_df.copy()
+        if selected_run != "Todos":
+            view = view[view["run_id"] == selected_run]
+        if selected_workloads:
+            view = view[view["workload"].isin(selected_workloads)]
+
+        st.dataframe(view, use_container_width=True, height=300)
+
+        if not view.empty:
+            colA, colB = st.columns(2)
+            with colA:
+                fig_avg = px.bar(
+                    view,
+                    x="workload",
+                    y="avg_ms",
+                    color="backend",
+                    barmode="group",
+                    title="Latência Média (ms) por Workload",
+                    labels={"avg_ms": "ms", "workload": "Workload"},
+                    color_discrete_map={
+                        "postgres": "#336791",
+                        "mongo": "#47A248",
+                    },
+                )
+                st.plotly_chart(fig_avg, use_container_width=True)
+            with colB:
+                fig_p95 = px.bar(
+                    view,
+                    x="workload",
+                    y="p95_ms",
+                    color="backend",
+                    barmode="group",
+                    title="Latência p95 (ms) por Workload",
+                    labels={"p95_ms": "ms", "workload": "Workload"},
+                    color_discrete_map={
+                        "postgres": "#336791",
+                        "mongo": "#47A248",
+                    },
+                )
+                st.plotly_chart(fig_p95, use_container_width=True)
+
+            # Tabela resumo head-to-head
+            st.markdown("#### Head-to-head (último run de cada workload)")
+            latest_per = (
+                bench_df.sort_values("id", ascending=False)
+                .drop_duplicates(subset=["backend", "workload"])
+            )
+            pivot_avg = latest_per.pivot(
+                index="workload", columns="backend", values="avg_ms"
+            )
+            if "postgres" in pivot_avg.columns and "mongo" in pivot_avg.columns:
+                pivot_avg["mongo_vs_pg_pct"] = (
+                    (pivot_avg["mongo"] - pivot_avg["postgres"])
+                    / pivot_avg["postgres"] * 100
+                ).round(1)
+            st.dataframe(pivot_avg, use_container_width=True)
 
 # ============================================================================
 # RODAPÉ
