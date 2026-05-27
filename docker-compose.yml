@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tcc_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tcc_target
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app_pwd
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pg_data:/var/lib/postgresql/data
+
+  mongo:
+    image: mongo:7
+    container_name: tcc_mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: tcc_target
+      MONGO_INITDB_ROOT_USERNAME: app
+      MONGO_INITDB_ROOT_PASSWORD: app_pwd
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./scripts/init_mongo.js:/docker-entrypoint-initdb.d/init.js:ro
+      - mongo_data:/data/db
+
+volumes:
+  pg_data:
+  mongo_data:

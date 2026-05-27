@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Streamlit Dashboard",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "streamlit", "run", "access_defense/dashboard.py", "--server.headless", "true", "--server.port", "8501"],
+      "port": 8501
+    },
+    {
+      "name": "Vulnerable HTTP Server",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "access_defense.server", "--port", "8000"],
+      "port": 8000
+    },
+    {
+      "name": "AI Agent Loop (Qwen 2.5)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "access_defense.agent_loop", "--model", "qwen2.5", "--interval", "3"],
+      "port": 0
+    },
+    {
+      "name": "AI Agent Loop (Gemma 3)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "access_defense.agent_loop", "--model", "gemma3", "--interval", "3"],
+      "port": 0
+    }
+  ]
+}

@@ -25,4 +25,4 @@ Write-Host "📊 Acesse: http://localhost:$Port" -ForegroundColor Green
 Write-Host "💡 Pressione CTRL+C para parar" -ForegroundColor Yellow
 Write-Host ""
 
-streamlit run access_defense/dashboard.py --server.port=$Port
+python -m streamlit run access_defense/dashboard.py --server.port=$Port

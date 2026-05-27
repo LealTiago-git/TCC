@@ -1,6 +1,14 @@
 __pycache__/
 *.pyc
 *.db
+*.db.bak*
 .env
 ChavesOpenrouter.txt
 teste.py
+
+# Ephemeral test outputs
+metrics_*.json
+logs/
+
+# Editor / local config
+.claude/settings.local.json
