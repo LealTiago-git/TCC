@@ -130,17 +130,33 @@ TOOLS_SPEC = [
 SYSTEM_PROMPT = (
     "Voce e um agente autonomo de defesa de banco de dados. "
     "Recebe um batch de eventos de acesso recentes (logs em JSON). "
-    "Para cada padrao malicioso identificado, chame UMA das ferramentas: "
-    "block_ip, lock_user, flag_for_audit, no_action. "
-    "Pode chamar varias ferramentas no mesmo turno. "
-    "Indicadores de ataque a procurar: "
-    "tokens SQL injection (UNION, OR 1=1, --, DROP), "
-    "operadores NoSQL no payload ($ne, $gt, $where), "
-    "varias tentativas de login negadas do mesmo IP, "
-    "volume anormal de requests, "
-    "acessos a tabelas sensiveis (salarios) por usuario sem permissao, "
-    "raw SQL exfiltrando users/passwords. "
-    "Seja conservador: prefira flag_for_audit a block quando incerto. "
+    "Classifique CADA evento em uma categoria de ataque e escolha UMA acao. "
+    "Ferramentas: block_ip, lock_user, flag_for_audit, no_action. "
+    "Pode chamar varias ferramentas no mesmo turno se houver ataques distintos. "
+    "\n\n"
+    "TAXONOMIA DE ATAQUES (use exatamente esses nomes no campo 'reason'):\n"
+    "- sql_injection: payload contem UNION, OR 1=1, --, DROP, ; UNION SELECT, ou information_schema\n"
+    "- nosql_injection: payload contem $ne, $gt, $where, $regex, $exists\n"
+    "- brute_force: 3+ tentativas de login negadas mesmo username em janela curta\n"
+    "- ddos: 20+ requests em poucos segundos do mesmo IP\n"
+    "- buffer_overflow: input com mais de 256 chars em campos pequenos (table_name, username)\n"
+    "- privilege_escalation: usuario sem permissao tentando tabela sensivel (salarios)\n"
+    "- exfiltration: SELECT direto em users/passwords ou raw SQL com SELECT *\n"
+    "- benign: trafego normal, sem padrao malicioso\n"
+    "\n"
+    "REGRAS DE ACAO:\n"
+    "- Se IP ja apareceu em batch anterior e foi bloqueado: use no_action (nao re-bloquear).\n"
+    "- Se ve sql_injection, nosql_injection, exfiltration, buffer_overflow, ddos: block_ip com reason = categoria exata.\n"
+    "- Se ve brute_force: lock_user com reason = 'brute_force'.\n"
+    "- Se ve privilege_escalation: lock_user + flag_for_audit.\n"
+    "- Se incerto: flag_for_audit com reason = categoria suspeita.\n"
+    "- Se TODOS eventos sao benign: chame no_action UMA vez.\n"
+    "\n"
+    "FORMATO REASON: sempre comece com a categoria exata da taxonomia, ex: "
+    "'sql_injection: UNION detected in table_name', "
+    "'brute_force: 5 failed logins for admin', "
+    "'ddos: 50 requests in 10s from same IP'. "
+    "NAO use frases genericas como 'Multiple injection attempts'. "
     "Responda usando tool_calls; nao escreva texto explicativo extra."
 )
 
@@ -195,6 +211,11 @@ def model_supports_tools(model: str) -> bool:
 
 
 def fetch_new_events(last_seen_id: int, limit: int) -> list[dict[str, Any]]:
+    """Carrega proximos eventos novos, ignorando IPs ja bloqueados.
+
+    Evita reprocessar trafego de IPs onde a defesa ja agiu — economiza
+    tokens LLM e elimina re-block redundante.
+    """
     with get_connection() as conn:
         rows = conn.execute(
             """
@@ -203,12 +224,40 @@ def fetch_new_events(last_seen_id: int, limit: int) -> list[dict[str, Any]]:
                    success, denial_reason
             FROM access_logs
             WHERE id > ?
+              AND ip_address NOT IN (
+                  SELECT ip_address FROM blocked_ips
+                  WHERE expires_at IS NULL OR expires_at > ?
+              )
+              AND username NOT IN (
+                  SELECT username FROM locked_users
+                  WHERE expires_at IS NULL OR expires_at > ?
+              )
             ORDER BY id ASC
             LIMIT ?
             """,
-            (last_seen_id, limit),
+            (last_seen_id, utc_now(), utc_now(), limit),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def advance_last_seen(last_seen_id: int) -> int:
+    """Pula IDs filtrados (IP bloqueado / user locked) avançando last_seen
+    até o próximo log que NAO esta filtrado, evitando loop em vazio."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT MAX(id) AS m FROM access_logs
+            WHERE id > ?
+              AND (ip_address IN (
+                       SELECT ip_address FROM blocked_ips
+                       WHERE expires_at IS NULL OR expires_at > ?)
+                   OR username IN (
+                       SELECT username FROM locked_users
+                       WHERE expires_at IS NULL OR expires_at > ?))
+            """,
+            (last_seen_id, utc_now(), utc_now()),
+        ).fetchone()
+    return int(row["m"]) if row and row["m"] is not None else last_seen_id
 
 
 def last_log_id() -> int:
@@ -496,6 +545,14 @@ def run_loop(cfg: AgentConfig, *, once: bool = False, start_from: int | None = N
                 print(f"[agent] erro LLM: {exc}")
             except Exception as exc:
                 print(f"[agent] erro inesperado: {exc}")
+        else:
+            # Sem eventos novos visiveis: pode ser ate da fila vazia OU
+            # tudo filtrado por blocked_ips/locked_users. Avanca cursor.
+            skipped_to = advance_last_seen(last_id)
+            if skipped_to > last_id:
+                print(f"[agent] {skipped_to - last_id} logs filtrados (IP/user ja bloqueado), avancando para {skipped_to}")
+                last_id = skipped_to
+                continue  # tenta proximo batch sem dormir
         if once:
             return
         time.sleep(cfg.interval_s)

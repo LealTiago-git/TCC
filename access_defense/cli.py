@@ -734,7 +734,7 @@ def _print_access_logs(log_rows: list[dict[str, Any]]) -> None:
                 "tabela": row["table_name"],
                 "status": "permitido" if row["success"] else "bloqueado",
                 "score": row["anomaly_score"],
-                "motivos": _parse_reasons(row["anomaly_reasons"]),
+                "motivos": _parse_json_list(row["anomaly_reasons"]),
             }
             for row in log_rows
         ],
@@ -1056,20 +1056,12 @@ def _extract_json_object(text: str) -> str:
     return text[text.find("{") : text.rfind("}") + 1]
 
 
-def _parse_reasons(raw_reasons: str) -> str:
-    """Convert stored JSON anomaly reasons to a compact table cell."""
-
-    try:
-        parsed_reasons = json.loads(raw_reasons)
-    except json.JSONDecodeError:
-        return raw_reasons
-    if not isinstance(parsed_reasons, list):
-        return raw_reasons
-    return "; ".join(str(reason) for reason in parsed_reasons)
-
-
 def _parse_json_list(raw_value: str) -> str:
-    """Convert a stored JSON list to a compact display string."""
+    """Convert a stored JSON list to a compact display string.
+
+    Used for both anomaly reasons and executed-action arrays.
+    Returns the raw value unchanged when it is not a valid JSON list.
+    """
 
     try:
         parsed_value = json.loads(raw_value)
@@ -1124,9 +1116,6 @@ def _shorten(value: str, width: int) -> str:
     if len(collapsed_value) <= width:
         return collapsed_value
     return textwrap.shorten(collapsed_value, width=width, placeholder="...")
-#   return textwrap.fill(collapsed_value, width=width, placeholder="...")
-#
-#   "textwrap.fill" Para poder ler a analise completa em vez de cortar com reticencias, mas pode bagunçar a formatação da tabela dependendo do conteúdo.
 
 
 if __name__ == "__main__":

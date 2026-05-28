@@ -139,236 +139,101 @@ def evaluate_access_event(
     denial_reason: str | None,
     signals: AccessSignals,
 ) -> AnomalyResult:
-    """Comprehensive anomaly scoring function.
-    
-    This function is the core of the security detection system. It takes an
-    access event and all relevant context, then applies 18+ deterministic rules
-    to produce an anomaly score and justification.
-    
-    Args:
-        event_time: When the access was attempted (datetime with timezone)
-        username: The user attempting access
-        role: User's role/profile (admin, analyst, auditor)
-        ip_address: Source IP address
-        user_agent: User-Agent HTTP header or custom string
-        operation: Type of operation (READ, WRITE, DELETE)
-        table_name: Target table name
-        rows_returned: Number of rows returned (0 if denied)
-        success: Was access granted?
-        denial_reason: If denied, the reason (e.g., "invalid credentials")
-        signals: Behavioral signals from AccessSignals dataclass
-        
-    Returns:
-        AnomalyResult with score, severity, and list of reasons
+    """Score an access event using 18 deterministic rules (0-100, capped).
+
+    Returns AnomalyResult with numeric score, severity label, and the list
+    of reasons that fired. See module constants for thresholds.
     """
 
-    anomaly_score_points = 0
-    detected_anomalies: list[str] = []
+    score = 0
+    reasons: list[str] = []
+    ua_lower = user_agent.lower()
 
-    # ========================================================================
-    # RULE 1-2: TEMPORAL ANALYSIS
-    # ========================================================================
-    
-    current_hour = event_time.hour
-    is_outside_business_hours = (
-        current_hour < BUSINESS_HOURS_START or 
-        current_hour >= BUSINESS_HOURS_END
-    )
-    
-    if is_outside_business_hours:
-        anomaly_score_points += 20
-        detected_anomalies.append("acesso fora do horario comercial")
+    # Temporal: outside business hours
+    if event_time.hour < BUSINESS_HOURS_START or event_time.hour >= BUSINESS_HOURS_END:
+        score += 20
+        reasons.append("acesso fora do horario comercial")
 
-    # ========================================================================
-    # RULE 3: SENSITIVE TABLE ACCESS
-    # ========================================================================
-    
-    is_accessing_sensitive_table = table_name in SENSITIVE_TABLES
-    
-    if is_accessing_sensitive_table:
-        anomaly_score_points += 30
-        detected_anomalies.append("tabela sensivel acessada")
+    # Sensitive table
+    if table_name in SENSITIVE_TABLES:
+        score += 30
+        reasons.append("tabela sensivel acessada")
 
-    # ========================================================================
-    # RULE 4: ACCESS DENIAL
-    # ========================================================================
-    
+    # Access denied
     if not success:
-        anomaly_score_points += 35
-        denial_description = denial_reason or "motivo nao informado"
-        detected_anomalies.append(f"acesso negado: {denial_description}")
+        score += 35
+        reasons.append(f"acesso negado: {denial_reason or 'motivo nao informado'}")
 
-    # ========================================================================
-    # RULE 5: NEW IP ADDRESS
-    # ========================================================================
-    
-    is_user_known = username != "anonymous"
-    is_ip_unknown = not signals.ip_seen_before
-    
-    if is_user_known and is_ip_unknown:
-        anomaly_score_points += 20
-        detected_anomalies.append("IP novo para o usuario")
+    # New IP for a known user
+    if username != "anonymous" and not signals.ip_seen_before:
+        score += 20
+        reasons.append("IP novo para o usuario")
 
-    # ========================================================================
-    # RULE 6: BRUTE-FORCE PATTERN (Multiple denials)
-    # ========================================================================
-    
-    multiple_recent_denials = signals.recent_denied_count >= 3
-    
-    if multiple_recent_denials:
-        anomaly_score_points += 25
-        detected_anomalies.append(
-            "multiplas negacoes recentes para o usuario ou IP"
-        )
+    # Brute-force: multiple denials in window
+    if signals.recent_denied_count >= 3:
+        score += 25
+        reasons.append("multiplas negacoes recentes para o usuario ou IP")
 
-    # ========================================================================
-    # RULE 7: DDoS PATTERN (High volume)
-    # ========================================================================
-    
-    abnormally_high_volume = (
-        signals.recent_access_count >= HIGH_ACCESS_VOLUME_THRESHOLD
-    )
-    
-    if abnormally_high_volume:
-        anomaly_score_points += 20
-        detected_anomalies.append(
-            "volume alto de acessos em janela curta"
-        )
+    # DDoS: high access volume in window
+    if signals.recent_access_count >= HIGH_ACCESS_VOLUME_THRESHOLD:
+        score += 20
+        reasons.append("volume alto de acessos em janela curta")
 
-    # ========================================================================
-    # RULE 8: PRIVILEGE VIOLATION (Non-admin destructive operations)
-    # ========================================================================
-    
-    is_destructive_operation = operation in {"DELETE", "WRITE"}
-    is_non_admin_role = role not in {"admin"}
-    
-    if is_destructive_operation and is_non_admin_role:
-        anomaly_score_points += 15
-        detected_anomalies.append(
-            "operacao de escrita por perfil nao administrativo"
-        )
+    # Privilege violation: destructive op by non-admin
+    if operation in {"DELETE", "WRITE"} and role != "admin":
+        score += 15
+        reasons.append("operacao de escrita por perfil nao administrativo")
 
-    # ========================================================================
-    # RULE 9: DESTRUCTIVE OPERATION (DELETE)
-    # ========================================================================
-    
+    # Destructive op (DELETE) — stacks with rule above
     if operation == "DELETE":
-        anomaly_score_points += 20
-        detected_anomalies.append("operacao destrutiva")
+        score += 20
+        reasons.append("operacao destrutiva")
 
-    # ========================================================================
-    # RULE 10-11: MASS READ OPERATIONS
-    # ========================================================================
-    
+    # Mass / elevated read
     if rows_returned >= HIGH_ROW_RETURN_THRESHOLD:
-        anomaly_score_points += 35
-        detected_anomalies.append("leitura em massa")
+        score += 35
+        reasons.append("leitura em massa")
     elif rows_returned >= MEDIUM_ROW_RETURN_THRESHOLD:
-        anomaly_score_points += 25
-        detected_anomalies.append("leitura elevada de registros")
+        score += 25
+        reasons.append("leitura elevada de registros")
 
-    # ========================================================================
-    # RULE 12: AUTOMATED CLIENT DETECTION
-    # ========================================================================
-    
-    user_agent_lowercase = user_agent.lower()
-    looks_automated = any(
-        automated_pattern in user_agent_lowercase 
-        for automated_pattern in AUTOMATED_USER_AGENTS
-    )
-    
-    if looks_automated:
-        anomaly_score_points += 10
-        detected_anomalies.append("user-agent automatizado ou suspeito")
+    # Automated client (curl, sqlmap, scanner, etc.)
+    if any(pat in ua_lower for pat in AUTOMATED_USER_AGENTS):
+        score += 10
+        reasons.append("user-agent automatizado ou suspeito")
 
-    # ========================================================================
-    # RULE 13: SQL INJECTION SIGNATURE
-    # ========================================================================
-    
-    # Inspect both table name and user-agent for injection tokens
-    combined_inspection_text = f"{table_name} {user_agent}".lower()
-    contains_sql_injection_token = any(
-        injection_token in combined_inspection_text
-        for injection_token in SQL_INJECTION_TOKENS
-    )
-    
-    if contains_sql_injection_token:
-        anomaly_score_points += 30
-        detected_anomalies.append(
-            "padrao compativel com tentativa de SQL injection"
-        )
+    # SQL injection signature (table + user-agent)
+    if any(tok in f"{table_name} {user_agent}".lower() for tok in SQL_INJECTION_TOKENS):
+        score += 30
+        reasons.append("padrao compativel com tentativa de SQL injection")
 
-    # ========================================================================
-    # RULE 14: DDoS ATTACK SIGNATURE
-    # ========================================================================
-    
-    if "attack-sim/ddos" in user_agent_lowercase:
-        anomaly_score_points += 25
-        detected_anomalies.append(
-            "padrao compativel com simulacao de DDoS"
-        )
+    # DDoS simulation marker
+    if "attack-sim/ddos" in ua_lower:
+        score += 25
+        reasons.append("padrao compativel com simulacao de DDoS")
 
-    # ========================================================================
-    # RULE 15: BUFFER OVERFLOW SIGNATURE
-    # ========================================================================
-    
-    excessive_table_name_length = len(table_name) > 64
-    excessive_user_agent_length = len(user_agent) > 256
-    buffer_overflow_indicator = "buffer-overflow" in user_agent_lowercase
-    
-    if (
-        excessive_table_name_length or 
-        excessive_user_agent_length or 
-        buffer_overflow_indicator
-    ):
-        anomaly_score_points += 35
-        detected_anomalies.append(
-            "entrada excessivamente grande ou possivel buffer overflow"
-        )
+    # Buffer overflow signature
+    if len(table_name) > 64 or len(user_agent) > 256 or "buffer-overflow" in ua_lower:
+        score += 35
+        reasons.append("entrada excessivamente grande ou possivel buffer overflow")
 
-    # ========================================================================
-    # RULE 16: PRIVILEGE ESCALATION SIGNATURE
-    # ========================================================================
-    
-    if "privilege-escalation" in user_agent_lowercase:
-        anomaly_score_points += 30
-        detected_anomalies.append(
-            "padrao compativel com tentativa de escalada de privilegio"
-        )
+    # Privilege escalation marker
+    if "privilege-escalation" in ua_lower:
+        score += 30
+        reasons.append("padrao compativel com tentativa de escalada de privilegio")
 
-    # ========================================================================
-    # RULE 17: CONTROLLED ATTACK SIMULATION MARKER
-    # ========================================================================
-    
-    is_simulated_attack = any(
-        sim_token in user_agent_lowercase
-        for sim_token in ATTACK_SIMULATION_TOKENS
-    )
-    
-    if is_simulated_attack:
-        anomaly_score_points += 15
-        detected_anomalies.append(
-            "evento gerado por simulador de ataque controlado"
-        )
+    # Controlled attack simulator marker
+    if any(tok in ua_lower for tok in ATTACK_SIMULATION_TOKENS):
+        score += 15
+        reasons.append("evento gerado por simulador de ataque controlado")
 
-    # ========================================================================
-    # FINALIZE RESULT
-    # ========================================================================
-    
-    # Ensure no single access can score > 100
-    final_anomaly_score = min(anomaly_score_points, 100)
-    
-    # If no rules fired, add explicit "normal" indicator
-    if not detected_anomalies:
-        detected_anomalies.append("nenhum sinal forte de anomalia")
-
-    # Convert numeric score to severity classification
-    final_severity = _classify_severity(final_anomaly_score)
-
+    final_score = min(score, 100)
+    if not reasons:
+        reasons.append("nenhum sinal forte de anomalia")
     return AnomalyResult(
-        score=final_anomaly_score,
-        severity=final_severity,
-        reasons=detected_anomalies
+        score=final_score,
+        severity=_classify_severity(final_score),
+        reasons=reasons,
     )
 
 

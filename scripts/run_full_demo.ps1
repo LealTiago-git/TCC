@@ -120,18 +120,37 @@ $env:OLLAMA_API_KEY = "ollama"
 Write-Step "Inicializando schema SQLite"
 python -m access_defense.cli init-db
 
+# Project root para Start-Job (runspaces nascem em diretorio default, nao herdam CWD)
+$ProjectRoot = (Get-Location).Path
+
 # 4. Server vulneravel em background
 Write-Step "Iniciando servidor vulneravel na porta $ServerPort"
+$serverLog = Join-Path $LogDir "server.log"
+"Server starting at $(Get-Date)" | Out-File $serverLog -Encoding utf8
 $serverJob = Start-Job -Name "server" -ScriptBlock {
-    param($Port)
-    python -m access_defense.server --port $Port 2>&1
-} -ArgumentList $ServerPort
-Start-Sleep -Seconds 4
+    param($Root, $Port, $LogPath)
+    Set-Location $Root
+    python -m access_defense.server --port $Port *>&1 | Tee-Object -FilePath $LogPath -Append
+} -ArgumentList $ProjectRoot, $ServerPort, (Resolve-Path $serverLog).Path
 
-# 5. Health check do server
-$health = Invoke-RestMethod -Uri "http://localhost:$ServerPort/health" -ErrorAction SilentlyContinue
+# 5. Health check do server com poll (espera ate 60s)
+Write-Host "[server] Aguardando /health responder (max 60s)..." -ForegroundColor Yellow
+$health = $null
+$deadline = (Get-Date).AddSeconds(60)
+while ((Get-Date) -lt $deadline) {
+    try {
+        $health = Invoke-RestMethod -Uri "http://localhost:$ServerPort/health" -TimeoutSec 3 -ErrorAction Stop
+        break
+    } catch {
+        Start-Sleep -Seconds 2
+    }
+}
 if ($null -eq $health) {
-    Write-Host "Server nao subiu. Veja logs/server.log" -ForegroundColor Red
+    Write-Host "Server nao subiu apos 60s." -ForegroundColor Red
+    Write-Host "--- Ultimas linhas de $serverLog ---" -ForegroundColor Yellow
+    if (Test-Path $serverLog) { Get-Content $serverLog -Tail 30 }
+    Write-Host "--- Output do Start-Job ---" -ForegroundColor Yellow
+    Receive-Job -Name "server" -Keep 2>&1 | Select-Object -Last 30
     Stop-AllJobs
     exit 1
 }
@@ -139,24 +158,46 @@ Write-Host "Health: $($health | ConvertTo-Json -Compress)" -ForegroundColor Gree
 
 # 6. Agente IA em background
 Write-Step "Iniciando agente IA ($Model)"
+$agentLog = Join-Path $LogDir "agent.log"
+"Agent ($Model) starting at $(Get-Date)" | Out-File $agentLog -Encoding utf8
 $agentJob = Start-Job -Name "agent" -ScriptBlock {
-    param($Mod, $Int)
+    param($Root, $Mod, $Int, $LogPath)
+    Set-Location $Root
     $env:AGENT_PROVIDER = "ollama"
     $env:OLLAMA_NATIVE_URL = "http://localhost:11434"
     $env:OLLAMA_API_KEY = "ollama"
-    python -m access_defense.agent_loop --model $Mod --interval $Int 2>&1
-} -ArgumentList $Model, $AgentInterval
+    python -m access_defense.agent_loop --model $Mod --interval $Int *>&1 | Tee-Object -FilePath $LogPath -Append
+} -ArgumentList $ProjectRoot, $Model, $AgentInterval, (Resolve-Path $agentLog).Path
 Start-Sleep -Seconds 2
 
 # 7. Dashboard (opcional)
 if (-not $SkipDashboard) {
     Write-Step "Iniciando dashboard Streamlit na porta $DashboardPort"
+    $dashLog = Join-Path $LogDir "dashboard.log"
+    "Dashboard starting at $(Get-Date)" | Out-File $dashLog -Encoding utf8
     $dashJob = Start-Job -Name "dashboard" -ScriptBlock {
-        param($Port)
-        python -m streamlit run access_defense/dashboard.py --server.headless true --server.port $Port 2>&1
-    } -ArgumentList $DashboardPort
-    Start-Sleep -Seconds 4
-    Write-Host "Dashboard: http://localhost:$DashboardPort" -ForegroundColor Green
+        param($Root, $Port, $LogPath)
+        Set-Location $Root
+        python -m streamlit run access_defense/dashboard.py --server.headless true --server.port $Port *>&1 | Tee-Object -FilePath $LogPath -Append
+    } -ArgumentList $ProjectRoot, $DashboardPort, (Resolve-Path $dashLog).Path
+
+    Write-Host "[dashboard] Aguardando responder (max 45s)..." -ForegroundColor Yellow
+    $deadline = (Get-Date).AddSeconds(45)
+    $dashReady = $false
+    while ((Get-Date) -lt $deadline) {
+        try {
+            Invoke-WebRequest -Uri "http://localhost:$DashboardPort" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop | Out-Null
+            $dashReady = $true
+            break
+        } catch {
+            Start-Sleep -Seconds 2
+        }
+    }
+    if ($dashReady) {
+        Write-Host "Dashboard: http://localhost:$DashboardPort" -ForegroundColor Green
+    } else {
+        Write-Host "Dashboard nao respondeu em 45s. Veja $dashLog" -ForegroundColor Yellow
+    }
 }
 
 # 8. Atacante
