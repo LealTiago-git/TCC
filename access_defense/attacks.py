@@ -70,8 +70,6 @@ def run_controlled_attack(
 
 
 def _attack_mode_functions() -> dict[str, Callable[..., list[AttackStepResult]]]:
-    """Map CLI attack names to their local simulation functions."""
-
     return {
         ATTACK_INJECTION: _simulate_sql_injection,
         ATTACK_DDOS: _simulate_ddos,
@@ -88,8 +86,6 @@ def _simulate_sql_injection(
     attack_session_id: str,
     request_count: int,
 ) -> list[AttackStepResult]:
-    """Generate rejected table names that resemble SQL injection attempts."""
-
     payloads = [
         "clientes' OR '1'='1",
         "clientes; DROP TABLE users; --",
@@ -127,8 +123,6 @@ def _simulate_ddos(
     attack_session_id: str,
     request_count: int,
 ) -> list[AttackStepResult]:
-    """Generate many local gateway requests to mimic a DDoS signal safely."""
-
     results: list[AttackStepResult] = []
     for step_number in range(1, request_count + 1):
         response = gateway.read_table(
@@ -161,8 +155,6 @@ def _simulate_brute_force(
     attack_session_id: str,
     request_count: int,
 ) -> list[AttackStepResult]:
-    """Generate repeated failed logins against one known username."""
-
     attempts = max(5, min(request_count, 20))
     results: list[AttackStepResult] = []
     for step_number in range(1, attempts + 1):
@@ -196,8 +188,6 @@ def _simulate_buffer_overflow(
     attack_session_id: str,
     request_count: int,
 ) -> list[AttackStepResult]:
-    """Generate oversized inputs to mimic buffer-overflow pressure."""
-
     oversized_table_name = "clientes_" + ("A" * 512)
     oversized_user_agent = "attack-sim/buffer-overflow " + ("B" * 1024)
     response = gateway.read_table(
@@ -229,8 +219,6 @@ def _simulate_privilege_escalation(
     attack_session_id: str,
     request_count: int,
 ) -> list[AttackStepResult]:
-    """Generate attempts where a low-privilege role asks for restricted actions."""
-
     attempts = [
         (
             "Leitura indevida da tabela salarios",
@@ -284,8 +272,6 @@ def _record_attack_step(
     expected_signal: str,
     response: AccessResponse,
 ) -> AttackStepResult:
-    """Persist one simulated attack step and return its display result."""
-
     with get_connection(db_path) as connection:
         connection.execute(
             """
@@ -317,6 +303,4 @@ def _record_attack_step(
 
 
 def _simulation_time(step_number: int) -> datetime:
-    """Return deterministic timestamps close enough to trigger windowed rules."""
-
     return datetime(2026, 5, 4, 15, min(step_number, 59), tzinfo=timezone.utc)

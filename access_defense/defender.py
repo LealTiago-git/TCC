@@ -74,8 +74,6 @@ class DefensiveMonitor:
         return row is not None and row["status"] == "shutdown"
 
     def _fetch_open_rule_alerts(self, *, limit: int) -> list[dict[str, Any]]:
-        """Load alerts that still need a defensive response."""
-
         with get_connection(self.db_path) as connection:
             rows = connection.execute(
                 """
@@ -109,8 +107,6 @@ class DefensiveMonitor:
         return [dict(row) for row in rows]
 
     def _process_alert(self, alert_row: dict[str, Any]) -> IncidentResponseResult:
-        """Create a response plan, log it, execute actions and close the alert."""
-
         attack_type = _classify_attack_type(alert_row)
         planned_steps = _build_defensive_steps(attack_type, alert_row)
         shutdown_requested = _shutdown_is_required(
@@ -165,8 +161,6 @@ class DefensiveMonitor:
         planned_steps: list[str],
         shutdown_requested: bool,
     ) -> tuple[str, str]:
-        """Return the selected AI's response text or a local fallback plan."""
-
         fallback_message = _format_step_by_step_message(
             attack_type=attack_type,
             planned_steps=planned_steps,
@@ -205,8 +199,6 @@ class DefensiveMonitor:
         planned_steps: list[str],
         shutdown_requested: bool,
     ) -> int:
-        """Persist the response log before containment or shutdown actions."""
-
         with get_connection(self.db_path) as connection:
             cursor = connection.execute(
                 """
@@ -241,8 +233,6 @@ class DefensiveMonitor:
         attack_type: str,
         shutdown_requested: bool,
     ) -> tuple[list[str], str]:
-        """Execute local containment actions and return an action summary."""
-
         source_ip = str(alert_row["ip_address"])
         reason = f"{attack_type} detectado no alerta {alert_row['alert_id']}"
         service_status_after = "active"
@@ -322,8 +312,6 @@ class DefensiveMonitor:
         executed_actions: list[str],
         service_status_after: str,
     ) -> None:
-        """Update the pre-action log with the actions actually completed."""
-
         with get_connection(self.db_path) as connection:
             connection.execute(
                 """
@@ -359,8 +347,6 @@ def reset_defense_state(db_path: str | Path = DEFAULT_DB_PATH) -> None:
 
 
 def _classify_attack_type(alert_row: dict[str, Any]) -> str:
-    """Infer the simulated attack type from the audit event fields."""
-
     user_agent = str(alert_row["user_agent"]).lower()
     table_name = str(alert_row["table_name"]).lower()
     denial_reason = str(alert_row["denial_reason"] or "").lower()
@@ -387,8 +373,6 @@ def _build_defensive_steps(
     attack_type: str,
     alert_row: dict[str, Any],
 ) -> list[str]:
-    """Build the deterministic step-by-step response plan."""
-
     source_ip = alert_row["ip_address"]
     base_steps = [
         f"Confirmar o alerta {alert_row['alert_id']} e associar ao log {alert_row['access_log_id']}.",
@@ -430,8 +414,6 @@ def _shutdown_is_required(
     severity: str,
     shutdown_on_critical: bool,
 ) -> bool:
-    """Decide whether this response should simulate a defensive shutdown."""
-
     if not shutdown_on_critical:
         return False
     return severity == "critical" or attack_type in {"ddos", "buffer-overflow"}
@@ -443,8 +425,6 @@ def _format_step_by_step_message(
     planned_steps: list[str],
     shutdown_requested: bool,
 ) -> str:
-    """Create the monitor's local step-by-step defensive narration."""
-
     lines = [f"Resposta defensiva para {attack_type}:"]
     for step_number, step in enumerate(planned_steps, start=1):
         lines.append(f"{step_number}. {step}")
@@ -462,8 +442,6 @@ def _build_incident_payload(
     planned_steps: list[str],
     shutdown_requested: bool,
 ) -> dict[str, Any]:
-    """Build the payload sent to the selected incident-response AI."""
-
     return {
         "attack_type": attack_type,
         "alert": {
