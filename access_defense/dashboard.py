@@ -56,14 +56,26 @@ ATTACK_COLORS = {
 
 @st.cache_resource
 def get_db_path():
-    return Path(__file__).parent.parent / "access_control.db"
+    """Usa o banco vivo localmente; cai no snapshot demo no deploy (cloud).
+
+    `access_control.db` é gitignored — em produção (Streamlit Cloud) ele não
+    existe, então usamos `demo_data.db` commitado para a demonstração do TCC.
+    """
+    root = Path(__file__).parent.parent
+    live = root / "access_control.db"
+    demo = root / "demo_data.db"
+    return live if live.exists() else demo
 
 
 def connect():
     """Connection nova por request — evita conflitos com escritas concorrentes."""
     db = get_db_path()
     if not db.exists():
-        st.error("Banco SQLite não encontrado. Rode: `python -m access_defense.cli init-db`")
+        st.error(
+            "Banco SQLite não encontrado. Localmente rode "
+            "`python -m access_defense.cli init-db`; no deploy, garanta que "
+            "`demo_data.db` esteja commitado."
+        )
         st.stop()
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
@@ -149,7 +161,7 @@ with col_refresh:
         st.cache_resource.clear()
         st.rerun()
 with col_info:
-    st.caption(f"Última leitura: **{datetime.now().strftime('%H:%M:%S')}**  •  Banco: `access_control.db`")
+    st.caption(f"Última leitura: **{datetime.now().strftime('%H:%M:%S')}**  •  Banco: `{get_db_path().name}`")
 
 kpis = get_kpis()
 
