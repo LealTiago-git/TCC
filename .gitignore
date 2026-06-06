@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.db
 *.db.bak*
+!demo_data.db
 .env
 ChavesOpenrouter.txt
 teste.py
