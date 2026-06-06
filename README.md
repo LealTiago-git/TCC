@@ -6,7 +6,7 @@ Protótipo acadêmico que expõe um banco de dados **intencionalmente vulneráve
 
 ---
 
-# Tópico 1 — Como o Projeto Funciona (Visão Geral)
+# Como o Projeto Funciona (Visão Geral)
 
 ## A ideia
 
@@ -73,7 +73,7 @@ Um atacante dispara ataques reais contra um servidor HTTP. Cada requisição é 
 
 ---
 
-# Tópico 2 — Funcionamento Profundo
+# Funcionamento Profundo
 
 ## 2.1 Os bancos de dados (como são tratados)
 
@@ -261,7 +261,7 @@ Helper `categorize(payload)` (regex) classifica cada acesso na mesma taxonomia d
 
 ---
 
-# Tópico 3 — Guia de Uso
+# Guia de Uso
 
 ## 3.1 Pré-requisitos
 
