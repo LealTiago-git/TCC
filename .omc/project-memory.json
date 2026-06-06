@@ -1,0 +1,117 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1780762139976,
+  "projectRoot": "C:\\Users\\tiago\\Documents\\TCC",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "requirements.txt"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "pip",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "scripts"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "access_defense": {
+      "path": "access_defense",
+      "purpose": null,
+      "fileCount": 16,
+      "lastAccessed": 1780762139884,
+      "keyFiles": [
+        "agents.py",
+        "agent_loop.py",
+        "anomaly.py",
+        "attacker.py",
+        "attacks.py"
+      ]
+    },
+    "logs": {
+      "path": "logs",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1780762139885,
+      "keyFiles": [
+        "agent.log",
+        "dashboard.log",
+        "server.log"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 5,
+      "lastAccessed": 1780762139886,
+      "keyFiles": [
+        "init_mongo.js",
+        "init_postgres.sql",
+        "run_full_demo.ps1",
+        "run_hydra.sh",
+        "run_sqlmap.sh"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "access_defense\\attacker.py",
+      "accessCount": 1,
+      "lastAccessed": 1780762436914,
+      "type": "file"
+    },
+    {
+      "path": "access_defense\\agent_loop.py",
+      "accessCount": 1,
+      "lastAccessed": 1780762437413,
+      "type": "file"
+    },
+    {
+      "path": "GUIA_USO.md",
+      "accessCount": 1,
+      "lastAccessed": 1780762444916,
+      "type": "file"
+    },
+    {
+      "path": "access_defense\\database.py",
+      "accessCount": 1,
+      "lastAccessed": 1780762445847,
+      "type": "file"
+    },
+    {
+      "path": "README.md",
+      "accessCount": 1,
+      "lastAccessed": 1780762545623,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}
