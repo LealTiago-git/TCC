@@ -20,10 +20,22 @@
       "port": 0
     },
     {
-      "name": "AI Agent Loop (Gemma 3)",
+      "name": "AI Agent Loop (Llama 3.1)",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "access_defense.agent_loop", "--model", "gemma3", "--interval", "3"],
+      "runtimeArgs": ["-m", "access_defense.agent_loop", "--model", "llama3.1", "--interval", "3"],
       "port": 0
+    },
+    {
+      "name": "Defense Proxy (Juice Shop)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "access_defense.proxy", "--port", "9000", "--upstream", "http://localhost:3000", "--name", "juice-shop"],
+      "port": 9000
+    },
+    {
+      "name": "Defense Proxy (crAPI)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "access_defense.proxy", "--port", "9001", "--upstream", "http://localhost:8888", "--name", "crapi"],
+      "port": 9001
     }
   ]
 }

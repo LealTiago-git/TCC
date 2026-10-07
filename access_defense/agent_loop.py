@@ -177,11 +177,22 @@ class AgentConfig:
     timeout_s: int = 60
 
 
+# Mesmo --model local funciona na nuvem: o alias traduz o nome Ollama para o
+# slug OpenRouter. Se --model já tiver "/", é um id OpenRouter completo e passa
+# direto. Trocar local<->nuvem vira só mudar AGENT_PROVIDER.
+OPENROUTER_ALIASES = {
+    "qwen2.5": "qwen/qwen-2.5-7b-instruct",
+    "llama3.1": "meta-llama/llama-3.1-8b-instruct",
+}
+
+
 def build_config(model: str, batch: int, interval: int) -> AgentConfig:
     provider = os.getenv("AGENT_PROVIDER", "ollama").strip().lower()
     if provider == "openrouter":
         base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         key = os.getenv("OPENROUTER_API_KEY", "")
+        if "/" not in model:
+            model = OPENROUTER_ALIASES.get(model, model)
     else:
         # Para Ollama, usamos a API nativa /api/chat (suporta tools melhor que /v1)
         base = os.getenv("OLLAMA_NATIVE_URL", "http://localhost:11434")
@@ -565,7 +576,7 @@ def run_loop(cfg: AgentConfig, *, once: bool = False, start_from: int | None = N
 
 def main():
     parser = argparse.ArgumentParser(description="Agente IA autonomo do TCC.")
-    parser.add_argument("--model", default="gemma3", help="gemma3, qwen2.5, etc.")
+    parser.add_argument("--model", default="qwen2.5", help="qwen2.5, llama3.1, etc. (precisam de tool-calling nativo)")
     parser.add_argument("--batch", type=int, default=15, help="Eventos por batch")
     parser.add_argument("--interval", type=int, default=3, help="Segundos entre polls")
     parser.add_argument("--once", action="store_true", help="Processa um batch e sai")
