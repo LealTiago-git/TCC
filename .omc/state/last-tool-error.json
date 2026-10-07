@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"echo \\\"=== compose ===\\\" && cat docker-compose.yml && echo \\\"=== dockerfile? ===\\\" && ls -la Dockerfile* .dockerignore 2>/dev/null; echo \\\"=== reqs ===\\\" && ls requirements*.txt pyproject....",
+  "error": "Exit code 2\n=== compose ===\nservices:\r\n  postgres:\r\n    image: postgres:16-alpine\r\n    container_name: tcc_postgres\r\n    restart: unless-stopped\r\n    environment:\r\n      POSTGRES_DB: tcc_target\r\n      POSTGRES_USER: app\r\n      POSTGRES_PASSWORD: app_pwd\r\n    ports:\r\n      - \"5432:5432\"\r\n    volumes:\r\n      - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro\r\n      - pg_data:/var/lib/postgresql/data\r\n\r\n  mongo:\r\n    image: mongo:7\r\n    container_name: tcc_mongo\r\n    restart: unl...",
+  "timestamp": "2026-10-07T14:56:36.517Z",
+  "retry_count": 1
+}
