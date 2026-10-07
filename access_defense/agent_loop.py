@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -177,11 +178,22 @@ class AgentConfig:
     timeout_s: int = 60
 
 
+# Mesmo --model local funciona na nuvem: o alias traduz o nome Ollama para o
+# slug OpenRouter. Se --model já tiver "/", é um id OpenRouter completo e passa
+# direto. Trocar local<->nuvem vira só mudar AGENT_PROVIDER.
+OPENROUTER_ALIASES = {
+    "qwen2.5": "qwen/qwen-2.5-7b-instruct",
+    "llama3.1": "meta-llama/llama-3.1-8b-instruct",
+}
+
+
 def build_config(model: str, batch: int, interval: int) -> AgentConfig:
     provider = os.getenv("AGENT_PROVIDER", "ollama").strip().lower()
     if provider == "openrouter":
         base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         key = os.getenv("OPENROUTER_API_KEY", "")
+        if "/" not in model:
+            model = OPENROUTER_ALIASES.get(model, model)
     else:
         # Para Ollama, usamos a API nativa /api/chat (suporta tools melhor que /v1)
         base = os.getenv("OLLAMA_NATIVE_URL", "http://localhost:11434")
@@ -416,12 +428,21 @@ def extract_tool_calls(llm_response: dict[str, Any]) -> list[dict[str, Any]]:
 # ============================================================================
 
 
+def _unwrap(args: dict[str, Any], key: str) -> dict[str, Any]:
+    # Alguns modelos aninham os args sob a 1a chave: {"ip": {"ip":..., "reason":...}}.
+    val = args.get(key)
+    return val if isinstance(val, dict) else args
+
+
 def execute_block_ip(args: dict[str, Any]) -> tuple[bool, str | None]:
+    args = _unwrap(args, "ip")
     ip = str(args.get("ip", "")).strip()
     reason = str(args.get("reason", "agent decision"))
     ttl = int(args.get("ttl_seconds", 3600) or 0)
-    if not ip:
-        return False, "ip vazio"
+    # ponytail: regex frouxa (IPv4/IPv6 chars), não valida octetos; troca por
+    # ipaddress.ip_address() se precisar rejeitar IP sintaticamente inválido.
+    if not re.fullmatch(r"[0-9a-fA-F:.]{3,45}", ip):
+        return False, f"ip invalido: {ip!r}"
     expires_at = (
         (datetime.now(timezone.utc) + timedelta(seconds=ttl)).replace(microsecond=0).isoformat()
         if ttl > 0 else None
@@ -443,10 +464,11 @@ def execute_block_ip(args: dict[str, Any]) -> tuple[bool, str | None]:
 
 
 def execute_lock_user(args: dict[str, Any]) -> tuple[bool, str | None]:
+    args = _unwrap(args, "username")
     username = str(args.get("username", "")).strip()
     reason = str(args.get("reason", "agent decision"))
-    if not username:
-        return False, "username vazio"
+    if not username or len(username) > 100 or "{" in username:
+        return False, f"username invalido: {username!r}"
     with get_connection() as conn:
         conn.execute(
             """
@@ -565,7 +587,7 @@ def run_loop(cfg: AgentConfig, *, once: bool = False, start_from: int | None = N
 
 def main():
     parser = argparse.ArgumentParser(description="Agente IA autonomo do TCC.")
-    parser.add_argument("--model", default="gemma3", help="gemma3, qwen2.5, etc.")
+    parser.add_argument("--model", default="qwen2.5", help="qwen2.5, llama3.1, etc. (precisam de tool-calling nativo)")
     parser.add_argument("--batch", type=int, default=15, help="Eventos por batch")
     parser.add_argument("--interval", type=int, default=3, help="Segundos entre polls")
     parser.add_argument("--once", action="store_true", help="Processa um batch e sai")

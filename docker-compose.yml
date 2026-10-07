@@ -27,6 +27,17 @@ services:
       - ./scripts/init_mongo.js:/docker-entrypoint-initdb.d/init.js:ro
       - mongo_data:/data/db
 
+  # --- Lab OWASP oficial (alvo padronizado p/ estudos de caso) ---
+  # Efêmero de propósito: reseta a cada "up" => runs reproduzíveis p/ métrica.
+  # Ataques passam pelo proxy.py (porta 9000) p/ entrar em access_logs.
+  # crAPI roda no compose oficial dele (colide PG/Mongo); proxy aponta p/ ele.
+  juice-shop:
+    image: bkimminich/juice-shop:latest
+    container_name: tcc_juice_shop
+    restart: unless-stopped
+    ports:
+      - "3000:3000" # http://localhost:3000  (scoreboard embutido = métricas de desafio)
+
 volumes:
   pg_data:
   mongo_data:
