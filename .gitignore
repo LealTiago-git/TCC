@@ -13,3 +13,18 @@ logs/
 
 # Editor / local config
 .claude/settings.local.json
+.omc/state/sessions/360aedd7-6192-4e91-b2b1-88a0d1a0ded1/session-started.json
+.omc/state/sessions/fbb42fbd-674b-4814-b2eb-fd2734ceb90f/session-started.json
+.omc/state/sessions/015fe5db-30da-4bae-b98a-3a15763c4769/session-started.json
+.omc/state/subagent-tracking.json
+.omc/state/agent-replay-015fe5db-30da-4bae-b98a-3a15763c4769.jsonl
+.omc/project-memory.json
+.gitignore
+.omc/sessions/6e4d3c82-d9b0-4a6b-98bb-90adff3731d4.json
+.omc/sessions/336500f5-da81-48ef-b2de-7a5c8e2b1e13.json
+.omc/sessions/78428773-f935-4c6d-8a58-429c6a2e3e9a.json
+.omc/sessions/a2fd7615-d54e-4dd4-8067-26abb5bbb364.json
+.omc/sessions/fbb42fbd-674b-4814-b2eb-fd2734ceb90f.json
+.omc/state/agent-replay-360aedd7-6192-4e91-b2b1-88a0d1a0ded1.jsonl
+.omc/state/last-tool-error.json
+.omc/state/checkpoints/checkpoint-2026-10-07T14-53-00-079Z.json

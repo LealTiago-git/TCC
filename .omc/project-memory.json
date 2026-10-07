@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1780762139976,
+  "lastScanned": 1791381262549,
   "projectRoot": "C:\\Users\\tiago\\Documents\\TCC",
   "techStack": {
     "languages": [
@@ -19,7 +19,7 @@
   },
   "build": {
     "buildCommand": null,
-    "testCommand": null,
+    "testCommand": "cat > Dockerfile <<'EOF'\n# Imagem unica p/ todos os papeis Python do lab (server, proxy, agent, dashboard).\n# Papel escolhido via `command` no docker-compose.\nFROM python:3.12-slim\nWORKDIR /app\nRUN pip install --no-cache-dir -U pip\nCOPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\nCOPY . .\n# Default = servidor vulneravel. Compose sobrescreve p/ proxy/agent/dashboard.\nCMD [\"python\", \"-m\", \"access_defense.server\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\"]\nEOF\ncat > .dockerignore <<'EOF'\n.git\n.omc\n__pycache__\n**/__pycache__\n*.pyc\n.venv\nvenv\nlogs\n*.db\n*.sqlite\n.pytest_cache\nEOF\necho \"wrote Dockerfile + .dockerignore\"",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {}
@@ -47,7 +47,7 @@
       "path": "access_defense",
       "purpose": null,
       "fileCount": 16,
-      "lastAccessed": 1780762139884,
+      "lastAccessed": 1791381262513,
       "keyFiles": [
         "agents.py",
         "agent_loop.py",
@@ -60,7 +60,7 @@
       "path": "logs",
       "purpose": null,
       "fileCount": 3,
-      "lastAccessed": 1780762139885,
+      "lastAccessed": 1791381262514,
       "keyFiles": [
         "agent.log",
         "dashboard.log",
@@ -71,7 +71,7 @@
       "path": "scripts",
       "purpose": "Build/utility scripts",
       "fileCount": 5,
-      "lastAccessed": 1780762139886,
+      "lastAccessed": 1791381262515,
       "keyFiles": [
         "init_mongo.js",
         "init_postgres.sql",
@@ -83,15 +83,33 @@
   },
   "hotPaths": [
     {
-      "path": "access_defense\\attacker.py",
-      "accessCount": 1,
-      "lastAccessed": 1780762436914,
+      "path": "access_defense\\agent_loop.py",
+      "accessCount": 8,
+      "lastAccessed": 1791384349034,
       "type": "file"
     },
     {
-      "path": "access_defense\\agent_loop.py",
+      "path": "README.md",
+      "accessCount": 4,
+      "lastAccessed": 1791385528511,
+      "type": "file"
+    },
+    {
+      "path": "docker-compose.yml",
+      "accessCount": 3,
+      "lastAccessed": 1791383512526,
+      "type": "file"
+    },
+    {
+      "path": ".claude\\launch.json",
+      "accessCount": 3,
+      "lastAccessed": 1791383523014,
+      "type": "file"
+    },
+    {
+      "path": "access_defense\\attacker.py",
       "accessCount": 1,
-      "lastAccessed": 1780762437413,
+      "lastAccessed": 1780762436914,
       "type": "file"
     },
     {
@@ -107,9 +125,21 @@
       "type": "file"
     },
     {
-      "path": "README.md",
+      "path": "access_defense\\server.py",
       "accessCount": 1,
-      "lastAccessed": 1780762545623,
+      "lastAccessed": 1791383459776,
+      "type": "file"
+    },
+    {
+      "path": "access_defense\\proxy.py",
+      "accessCount": 1,
+      "lastAccessed": 1791383484128,
+      "type": "file"
+    },
+    {
+      "path": "access_defense\\test_proxy.py",
+      "accessCount": 1,
+      "lastAccessed": 1791383541360,
       "type": "file"
     }
   ],

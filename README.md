@@ -421,7 +421,7 @@ Você está assumindo um projeto de TCC chamado **Sistema de Defesa Contra Acess
 
 **Armadilha já resolvida (não reintroduza).** qwen2.5 às vezes aninha os args de tool-call (`{"ip": {"ip": "...", "reason": ...}}`). O helper `_unwrap(args, key)` desaninha e `execute_block_ip` valida o IP com regex `[0-9a-fA-F:.]{3,45}` antes de inserir — sem isso, o dict-string inteiro virava "IP" em `blocked_ips` e nunca batia com o tráfego real, então o 403 nunca disparava. Qualquer mexida no executor tem que manter unwrap+validação. Check em `access_defense/test_proxy.py`.
 
-**Modelos (achado do TCC).** Tool-calling **nativo** (qwen2.5, llama3.1) é materialmente mais confiável que o **fallback JSON** (gemma3, que raramente bloqueia, nunca trava, e engasga após ~5 batches). `extract_tool_calls` aceita os dois caminhos. Troca local→nuvem = só mudar `AGENT_PROVIDER=openrouter`; `OPENROUTER_ALIASES` traduz `qwen2.5`→`qwen/qwen-2.5-7b-instruct` etc.
+**Modelos (achado do TCC).** Tool-calling **nativo** (qwen2.5, llama3.1). `extract_tool_calls` aceita os dois caminhos. Troca local→nuvem = só mudar `AGENT_PROVIDER=openrouter`; `OPENROUTER_ALIASES` traduz `qwen2.5`→`qwen/qwen-2.5-7b-instruct` etc.
 
 **Camada OWASP.** `proxy.py` é um reverse proxy que põe apps OWASP reais (Juice Shop :3000) sob o mesmo ciclo — loga e aplica 403 antes de repassar. Dá rigor métrico: alvo padronizado e reproduzível em vez de servidor caseiro. crAPI roda no compose próprio dele (colide portas).
 
