@@ -1,3 +1,24 @@
+# Base comum dos papeis Python (server/proxy/agent/dashboard): 1 imagem, 1 config.
+x-app: &app
+  build: .
+  image: tcc-defense:latest
+  # ponytail: bind-mount compartilha access_control.db + codigo vivo entre os papeis.
+  # Teto: lock do SQLite sobre bind-mount Windows pode travar sob concorrencia alta.
+  # Upgrade: volume nomeado em /app/data, ou mover control-plane p/ Postgres.
+  volumes:
+    - ./:/app
+  environment:
+    POSTGRES_DSN: host=postgres port=5432 dbname=tcc_target user=app password=app_pwd
+    MONGO_URI: mongodb://app:app_pwd@mongo:27017/?authSource=admin
+    AGENT_PROVIDER: ollama
+    OLLAMA_NATIVE_URL: http://host.docker.internal:11434
+    OLLAMA_API_KEY: ollama
+  extra_hosts:
+    - "host.docker.internal:host-gateway"  # Ollama roda no HOST (GPU), nao em container
+  depends_on:
+    - postgres
+    - mongo
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -37,6 +58,37 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000" # http://localhost:3000  (scoreboard embutido = métricas de desafio)
+
+  # --- Papeis Python do lab (mesma imagem tcc-defense) ---
+  server:
+    <<: *app
+    container_name: tcc_server
+    command: python -m access_defense.server --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+
+  proxy:
+    <<: *app
+    container_name: tcc_proxy
+    command: python -m access_defense.proxy --host 0.0.0.0 --port 9000 --upstream http://juice-shop:3000 --name juice-shop
+    ports:
+      - "9000:9000"
+    depends_on:
+      - postgres
+      - mongo
+      - juice-shop
+
+  agent:
+    <<: *app
+    container_name: tcc_agent
+    command: python -m access_defense.agent_loop --model qwen2.5 --interval 3
+
+  dashboard:
+    <<: *app
+    container_name: tcc_dashboard
+    command: python -m streamlit run access_defense/dashboard.py --server.headless true --server.address 0.0.0.0 --server.port 8501
+    ports:
+      - "8501:8501"
 
 volumes:
   pg_data:

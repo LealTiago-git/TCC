@@ -1,0 +1,11 @@
+.git
+.omc
+__pycache__
+**/__pycache__
+*.pyc
+.venv
+venv
+logs
+*.db
+*.sqlite
+.pytest_cache
