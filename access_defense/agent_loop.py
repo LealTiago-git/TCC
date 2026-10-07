@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -427,12 +428,21 @@ def extract_tool_calls(llm_response: dict[str, Any]) -> list[dict[str, Any]]:
 # ============================================================================
 
 
+def _unwrap(args: dict[str, Any], key: str) -> dict[str, Any]:
+    # Alguns modelos aninham os args sob a 1a chave: {"ip": {"ip":..., "reason":...}}.
+    val = args.get(key)
+    return val if isinstance(val, dict) else args
+
+
 def execute_block_ip(args: dict[str, Any]) -> tuple[bool, str | None]:
+    args = _unwrap(args, "ip")
     ip = str(args.get("ip", "")).strip()
     reason = str(args.get("reason", "agent decision"))
     ttl = int(args.get("ttl_seconds", 3600) or 0)
-    if not ip:
-        return False, "ip vazio"
+    # ponytail: regex frouxa (IPv4/IPv6 chars), não valida octetos; troca por
+    # ipaddress.ip_address() se precisar rejeitar IP sintaticamente inválido.
+    if not re.fullmatch(r"[0-9a-fA-F:.]{3,45}", ip):
+        return False, f"ip invalido: {ip!r}"
     expires_at = (
         (datetime.now(timezone.utc) + timedelta(seconds=ttl)).replace(microsecond=0).isoformat()
         if ttl > 0 else None
@@ -454,10 +464,11 @@ def execute_block_ip(args: dict[str, Any]) -> tuple[bool, str | None]:
 
 
 def execute_lock_user(args: dict[str, Any]) -> tuple[bool, str | None]:
+    args = _unwrap(args, "username")
     username = str(args.get("username", "")).strip()
     reason = str(args.get("reason", "agent decision"))
-    if not username:
-        return False, "username vazio"
+    if not username or len(username) > 100 or "{" in username:
+        return False, f"username invalido: {username!r}"
     with get_connection() as conn:
         conn.execute(
             """
