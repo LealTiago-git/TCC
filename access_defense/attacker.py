@@ -93,12 +93,22 @@ BRUTE_FORCE_PASSWORDS = [
 # ============================================================================
 
 
+def _body(r) -> dict:
+    # O server.py devolve 403 em JSON, mas o proxy.py devolve em texto puro
+    # ("ip blocked: ..."). Lê os dois sem quebrar, pra o 403 contar como
+    # bloqueio e nao como erro.
+    try:
+        return r.json()
+    except Exception:
+        return {"_raw": r.text[:500]}
+
+
 def _post(target: str, path: str, payload: dict, timeout: float = 5.0) -> dict | None:
     try:
         r = requests.post(target + path, json=payload, timeout=timeout)
         if r.status_code == 403:
-            return {"_blocked": True, "status": 403, "body": r.json()}
-        return {"status": r.status_code, "body": r.json()}
+            return {"_blocked": True, "status": 403, "body": _body(r)}
+        return {"status": r.status_code, "body": _body(r)}
     except Exception as exc:
         return {"_error": str(exc)}
 
@@ -107,8 +117,8 @@ def _get(target: str, path: str, params: dict, timeout: float = 5.0) -> dict | N
     try:
         r = requests.get(target + path, params=params, timeout=timeout)
         if r.status_code == 403:
-            return {"_blocked": True, "status": 403, "body": r.json()}
-        return {"status": r.status_code, "body": r.json()}
+            return {"_blocked": True, "status": 403, "body": _body(r)}
+        return {"status": r.status_code, "body": _body(r)}
     except Exception as exc:
         return {"_error": str(exc)}
 

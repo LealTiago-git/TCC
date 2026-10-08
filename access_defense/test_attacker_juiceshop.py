@@ -65,3 +65,24 @@ def test_juiceshop_counts_breaches_and_block(monkeypatch):
     blocked_report = attacker.attack_juiceshop("http://localhost:9000")
     assert blocked_report.blocked_by_defense == blocked_report.requests_sent
     assert blocked_report.successful_breaches == 0
+
+
+class _TextResp:
+    """Resposta HTTP só-texto (como o proxy devolve no 403), cujo .json() quebra."""
+    status_code = 403
+    text = "ip blocked: sql_injection: UNION detected"
+
+    def json(self):
+        raise ValueError("No JSON object could be decoded")
+
+
+def test_text_403_from_proxy_counts_as_block_not_error(monkeypatch):
+    # Regressão: o proxy devolve 403 em texto puro. O atacante tem que contar
+    # como bloqueio, não como erro (antes r.json() quebrava e virava _error).
+    monkeypatch.setattr(attacker.requests, "post", lambda *a, **k: _TextResp())
+    monkeypatch.setattr(attacker.requests, "get", lambda *a, **k: _TextResp())
+
+    report = attacker.attack_juiceshop("http://localhost:9000")
+    assert report.blocked_by_defense == report.requests_sent
+    assert report.errors == 0
+    assert report.successful_breaches == 0
