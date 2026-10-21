@@ -78,6 +78,17 @@ services:
       - mongo
       - juice-shop
 
+  # Mesmo padrão do proxy (Juice Shop), agora p/ o crAPI.
+  # crAPI roda no compose OFICIAL dele (projeto "crapi", rede própria) e publica
+  # só 127.0.0.1:8888 no host; este proxy alcança via host.docker.internal
+  # (extra_hosts já vem do &app). Sem depends_on: o crAPI é outro projeto.
+  proxy-crapi:
+    <<: *app
+    container_name: tcc_proxy_crapi
+    command: python -m access_defense.proxy --host 0.0.0.0 --port 9001 --upstream http://host.docker.internal:8888 --name crapi
+    ports:
+      - "9001:9001"
+
   agent:
     <<: *app
     container_name: tcc_agent
