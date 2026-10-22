@@ -1,6 +1,6 @@
 # TCC — Sistema de Defesa Contra Acessos Anômalos com Agentes de IA
 
-Protótipo acadêmico que expõe um banco de dados **intencionalmente vulnerável** a ataques HTTP reais (SQL Injection, NoSQL Injection, brute-force, DDoS, exfiltração, escalada de privilégio) e usa **agentes LLM autônomos** (qwen2.5, gemma3) para detectar esses ataques e executar respostas defensivas em tempo real — bloquear IP, travar usuário, registrar alerta.
+Protótipo acadêmico que expõe um banco de dados **intencionalmente vulnerável** a ataques HTTP reais (SQL Injection, NoSQL Injection, brute-force, DDoS, exfiltração, escalada de privilégio) e usa **agentes LLM autônomos** (qwen2.5, llama3.1, gemma3) para detectar esses ataques e executar respostas defensivas em tempo real — bloquear IP, travar usuário, registrar alerta.
 
 > ⚠️ **Aviso de segurança:** o servidor é vulnerável de propósito. Roda apenas em `127.0.0.1` atrás de containers Docker isolados. **Nunca exponha à internet.**
 
@@ -70,7 +70,7 @@ Um atacante dispara ataques reais contra um servidor HTTP. Cada requisição é 
 
 ## Princípio do TCC
 
-**Defesa autônoma por LLM com tool-calling.** O modelo não só *explica* o ataque — ele **age** (bloqueia, trava, alerta). O projeto compara dois modelos (qwen2.5 vs gemma3) e dois bancos (Postgres vs MongoDB).
+**Defesa autônoma por LLM com tool-calling.** O modelo não só *explica* o ataque — ele **age** (bloqueia, trava, alerta). O projeto compara modelos (qwen2.5 vs llama3.1, com gemma3 como baseline sem tool-calling) e dois bancos (Postgres vs MongoDB).
 
 ---
 
@@ -150,7 +150,10 @@ Cliente HTTP que dispara **requisições reais** via `requests`. 6 modos:
 | `ddos` | `/pg/search` | ThreadPool com N requisições concorrentes |
 | `exfil` | `/pg/query` | SQL bruto dumpando `users`/`salarios`/`information_schema` |
 | `privesc` | `/pg/search` | User comum (`joao`) tentando ler `salarios` |
-| `full` | todos | Roda os 6 em sequência |
+| `full` | todos | Roda os 6 em sequência (contra o `server.py` caseiro) |
+| `juice-shop` | `/rest/user/login`, `/rest/products/search`, `/api/Users`, `/rest/basket/{id}` | Alvo OWASP real via proxy (`:9000`): SQLi auth-bypass + brute-force + exfil/IDOR nos endpoints nativos |
+
+Os endpoints nativos do Juice Shop ficam mapeados em `JUICESHOP_ENDPOINTS` (attacker.py). Aponte `--target http://localhost:9000` para entrar no ciclo de defesa. crAPI usa o mesmo padrão em `:9001` — ver `USANDO_CRAPI.md`.
 
 Payloads reais embutidos:
 
@@ -205,15 +208,23 @@ Regras de ação embutidas no prompt: injeção/exfil/ddos/overflow → `block_i
 - **Fallback JSON** — modelos sem tool-calling nativo (gemma3) recebem instrução para responder um array JSON; o parser `extract_tool_calls` aceita tanto `message.tool_calls` (nativo) quanto JSON cru no `content`.
 - **OpenRouter** — suportado via `AGENT_PROVIDER=openrouter` para rodar na nuvem.
 
-### Comparação observada (qwen2.5 vs gemma3)
+### Comparação medida (qwen2.5 vs llama3.1 vs gemma3)
 
-| | qwen2.5 | gemma3 |
+Bateria de 10 sessões × 6 ataques × 2 modelos (n=10 por célula — ver `battery.py` e §2.6b):
+
+| | qwen2.5 | llama3.1 |
 |---|---|---|
-| Tool-calling | nativo | fallback JSON |
-| Cobertura | usa `block_ip` + `lock_user` + `flag` | quase só `flag` (raramente bloqueia, nunca trava) |
-| Estabilidade | constante | trava após ~5 batches |
+| Tool-calling | nativo | nativo |
+| Acurácia de categoria | **72%** (43/60) | 40% (24/60) |
+| Agiu (block/lock) | 72% (43/60) | **95%** (57/60) |
+| Latência média | **7,5 s** | 23,0 s |
+| Perfil | preciso, rápido, conservador | recall alto, lento, taxonomia imprecisa |
 
-**Conclusão:** tool-calling nativo é materialmente mais confiável para defesa autônoma.
+- **qwen2.5:** 100% de acurácia e ação em `sqli`, `brute-force`, `exfil`; subdetecta `privesc` (nunca bloqueia, só `flag_for_audit`).
+- **llama3.1:** bloqueia quase tudo, mas rotula `ddos`/`exfil`/`privesc` como `sql_injection` (categoria errada embora aja).
+- **gemma3:** sem tool-calling nativo → cai no fallback JSON, quase só `flag`, trava após ~5 batches.
+
+**Conclusão:** há trade-off entre precisão (qwen2.5) e recall (llama3.1); tool-calling nativo é pré-requisito para defesa autônoma confiável (gemma3 não qualifica).
 
 ## 2.5 Benchmark Postgres vs MongoDB (`benchmark.py`)
 
@@ -235,6 +246,26 @@ Calcula a eficácia da IA contra os ataques:
 - `attack_success_rate_pct` — % de ataques que ainda retornaram dados.
 - `coverage_pct` — % de IPs atacantes que foram bloqueados.
 - Distribuição de ações por ferramenta e por modelo.
+
+## 2.6b Bateria comparativa de modelos (`battery.py`)
+
+Harness de experimento reprodutível que compara modelos LLM contra **cada ataque em cada backend**, de forma isolada e com resultado persistido para o estudo.
+
+Para cada `(modelo, ataque)` o harness: limpa `blocked_ips`/`locked_users`, dispara o ataque, lê os eventos novos, chama o LLM **uma vez**, aplica as tool-calls e registra uma linha. Reusa `agent_loop` + `attacker` internos (nenhuma lógica duplicada).
+
+Cada execução gera um `run_id` e **anexa** (nunca sobrescreve) ao CSV acumulativo `results/battery_results.csv`. Colunas:
+
+| coluna | significado |
+|---|---|
+| `run_id`, `timestamp` | identifica a sessão de bateria |
+| `model`, `attack`, `db` | célula da matriz |
+| `breaches` | requests do ataque que retornaram dados |
+| `events` | eventos que o LLM viu |
+| `ai_category` / `expected_category` / `category_ok` | categoria inferida vs esperada (0/1) |
+| `acted` | 1 se usou `block_ip` ou `lock_user` |
+| `tools`, `latency_s` | ferramentas chamadas e tempo da célula |
+
+Assim todos os resultados métricos e exatos ficam versionados; a agregação (média/desvio por célula, cobertura, acurácia) sai direto do CSV.
 
 ## 2.7 O dashboard (`dashboard.py`)
 
@@ -308,6 +339,8 @@ docker compose down             # para tudo
 
 Proxy sob OWASP: ataque `http://localhost:9000` (Juice Shop via proxy) → entra em `access_logs` → agente bloqueia → 403 automático. Setup manual abaixo (3.2–3.4) segue válido para rodar os papéis no host em vez de container.
 
+**crAPI (2º alvo OWASP):** roda no compose oficial dele e publica só `127.0.0.1:8888`; o serviço `proxy-crapi` (`:9001`) o alcança via `host.docker.internal` — sem colisão de portas com o lab. Passo a passo em `USANDO_CRAPI.md`. Ataque com `--target http://localhost:9001 --name crapi`.
+
 ## 3.3 Demo automática (um comando)
 
 ```powershell
@@ -362,13 +395,31 @@ python -m access_defense.metrics            # texto
 python -m access_defense.metrics --json     # JSON
 ```
 
+### 3.5b Bateria comparativa (qwen2.5 × llama3.1)
+
+Pré-requisito: lab no ar (`server` :8000) e Ollama com os modelos. Pare o `agent` contínuo antes, para não processar os mesmos eventos em paralelo (`docker compose stop agent`; `docker compose start agent` ao fim).
+
+```powershell
+# 1 sessão (2 modelos × 6 ataques) → anexa ao CSV
+python -m access_defense.battery
+
+# N sessões acumuladas (cada uma = 1 run_id)
+python -m access_defense.battery --runs 10
+
+# opções
+python -m access_defense.battery --models qwen2.5 llama3.1 --csv results/battery_results.csv
+python -m access_defense.battery --selftest   # valida só o append do CSV (sem Docker/LLM)
+```
+
+Resultados acumulam em `results/battery_results.csv` (§2.6b). llama3.1 (4,9 GB) é lento em CPU — o harness já usa timeout de 300 s por célula.
+
 ## 3.6 Cenários de demonstração
 
 **A — Sem agente (baseline):** rode só o atacante. `attack_success_rate_pct` fica alto (~90-100%).
 
 **B — Com agente:** suba o agente, depois ataque. O IP é bloqueado após 1-2 batches; as requisições seguintes recebem 403.
 
-**C — qwen2.5 vs gemma3:** rode o cenário B com cada modelo e compare `ai_actions` e cobertura.
+**C — Comparação de modelos:** rode `python -m access_defense.battery --runs 10` e agregue `results/battery_results.csv` (acurácia de categoria, cobertura, latência por modelo×ataque). Ver §2.4 para os números medidos.
 
 ## 3.7 Limpeza
 
@@ -404,27 +455,3 @@ O dashboard usa `access_control.db` localmente e cai no snapshot commitado `demo
 **Desenvolvido para:** Trabalho de Conclusão de Curso
 **Stack:** Flask · Postgres · MongoDB · Ollama (qwen2.5, llama3.1, gemma3) · OpenRouter · Streamlit · Docker · OWASP Juice Shop
 **Repositório:** <https://github.com/LealTiago-git/TCC>
-
----
-
-# Para Outro Modelo de IA (handoff completo)
-
-Você está assumindo um projeto de TCC chamado **Sistema de Defesa Contra Acessos Anômalos com Agentes de IA**. Resumo denso de tudo que você precisa para continuar sem reler o código:
-
-**O que é.** Um laboratório de segurança que prova que um LLM com *tool-calling* consegue defender um banco de dados **sozinho**, em tempo real. A tese central: o modelo não só *descreve* o ataque — ele **age** (bloqueia IP, trava usuário, alerta). Tudo é acadêmico, roda só em `localhost`, o servidor é vulnerável **de propósito**.
-
-**Arquitetura (o loop).** `attacker.py` dispara ataques HTTP reais (SQLi, NoSQLi, brute-force, DDoS, exfiltração, privesc) → `server.py` (Flask :8000) executa contra Postgres/Mongo **de forma intencionalmente insegura** (f-string crua no SQL, filtro JSON do cliente direto no `find()`) e loga cada request em `access_logs` → `agent_loop.py` faz *poll* dessa tabela, agrupa em batch, manda ao LLM via Ollama `/api/chat` (ou OpenRouter na nuvem) → o LLM responde com *tool calls* → o executor grava em `blocked_ips`/`locked_users`/`security_alerts` → na próxima request o decorator `enforce_block` do server devolve **403 antes de tocar o banco**. `dashboard.py` (Streamlit :8501) mostra tudo ao vivo lendo só o SQLite.
-
-**Dois tipos de banco, não confunda.** (1) **Alvos** Postgres+Mongo em Docker, populados por `scripts/init_*.{sql,js}`, acessados pelo `db_backends.py` vulnerável — é onde o ataque *acontece*. (2) **Control-plane** `access_control.db` (SQLite, `database.py→init_db()`) — o "cérebro": `access_logs`, `blocked_ips`, `locked_users`, `ai_actions`, `security_alerts`, `benchmark_runs`. A IA só escreve no control-plane; o server só lê dele para o enforcement. É esse desacoplamento que faz a decisão do LLM virar efeito.
-
-**As 4 ferramentas do LLM:** `block_ip(ip, reason, ttl_seconds)`, `lock_user(username, reason)`, `flag_for_audit(log_id, severity, reason)`, `no_action(reason)`. O prompt (em `agent_loop.py`) força o modelo a classificar cada evento numa taxonomia fixa — `sql_injection, nosql_injection, brute_force, ddos, buffer_overflow, privilege_escalation, exfiltration, benign` — e começar o `reason` com ela. Regra anti-loop no prompt: IP já bloqueado em batch anterior → `no_action`.
-
-**Armadilha já resolvida (não reintroduza).** qwen2.5 às vezes aninha os args de tool-call (`{"ip": {"ip": "...", "reason": ...}}`). O helper `_unwrap(args, key)` desaninha e `execute_block_ip` valida o IP com regex `[0-9a-fA-F:.]{3,45}` antes de inserir — sem isso, o dict-string inteiro virava "IP" em `blocked_ips` e nunca batia com o tráfego real, então o 403 nunca disparava. Qualquer mexida no executor tem que manter unwrap+validação. Check em `access_defense/test_proxy.py`.
-
-**Modelos (achado do TCC).** Tool-calling **nativo** (qwen2.5, llama3.1). `extract_tool_calls` aceita os dois caminhos. Troca local→nuvem = só mudar `AGENT_PROVIDER=openrouter`; `OPENROUTER_ALIASES` traduz `qwen2.5`→`qwen/qwen-2.5-7b-instruct` etc.
-
-**Camada OWASP.** `proxy.py` é um reverse proxy que põe apps OWASP reais (Juice Shop :3000) sob o mesmo ciclo — loga e aplica 403 antes de repassar. Dá rigor métrico: alvo padronizado e reproduzível em vez de servidor caseiro. crAPI roda no compose próprio dele (colide portas).
-
-**Como rodar.** `docker compose up -d --build` sobe o lab inteiro (Ollama fica no host, alcançado via `host.docker.internal`). Ou manual no host: `server` + `agent_loop` + `dashboard` + `attacker` (seções 3.2–3.4). Métricas de eficácia em `metrics.py` (`time_to_block_ms`, `attack_success_rate_pct`, `coverage_pct`); comparação de bancos em `benchmark.py`.
-
-**Estado atual / próximos passos óbvios.** Loop fechado e verificado ponta-a-ponta (SQLi via proxy → qwen2.5 detecta em ~9s → block_ip → 403). Pendências conhecidas: crAPI ainda não automatizado no compose principal; `attacker.py` não tem mapa de endpoints nativo do Juice Shop (ataques via curl/proxy por ora); finetuning dos modelos é trabalho futuro mencionado no escopo. Mantenha: código vulnerável é intencional (não "conserte"), localhost-only, taxonomia fixa, unwrap+validação no executor.

