@@ -1,19 +1,17 @@
 """Dashboard Streamlit — Sistema de Defesa Contra Acessos Anômalos.
 
-5 abas focadas no fluxo atual (server.py + agent_loop.py):
-  1. Visão Geral — KPIs principais + estado do sistema
-  2. Acessos HTTP — logs do servidor com categoria de ataque
-  3. Defesa Ativa — IPs bloqueados, usuários travados, ações da IA
-  4. Análise de Ataques — distribuição por categoria + timeline + eficácia
-  5. Benchmark PG vs Mongo — comparação de performance dos backends
+Overhaul conciso: 4 abas que contam a história de ponta a ponta.
+  1. Visão Geral           — KPIs + o gráfico-tese (ataque bloqueado vs vazado)
+  2. Ataques & Defesa      — logs, ações da IA, quarentena, categoria × resultado
+  3. Comparação de Modelos — qwen2.5 × llama3.1 (lê results/battery_results.csv)
+  4. Benchmark PG × Mongo  — latência dos backends
 
-Execute:
+Lê o SQLite de controle (access_control.db; cai em demo_data.db na nuvem) e o
+CSV da bateria. Execute:
   python -m streamlit run access_defense/dashboard.py
 """
-
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
 from datetime import datetime
@@ -23,86 +21,58 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# ============================================================================
-# CONFIGURAÇÃO
-# ============================================================================
+st.set_page_config(page_title="TCC — Defesa Anti-Anomalias", page_icon="🛡️",
+                   layout="wide", initial_sidebar_state="collapsed")
 
-st.set_page_config(
-    page_title="TCC — Defesa Anti-Anomalias",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
-
-
-# Paleta única para categorias de ataque
+# Paletas únicas (reuso em todo o app)
 ATTACK_COLORS = {
-    "sql_injection":        "#e63946",  # vermelho
-    "nosql_injection":      "#f3722c",  # laranja
-    "brute_force":          "#f9c74f",  # amarelo
-    "ddos":                 "#9c27b0",  # roxo
-    "buffer_overflow":      "#577590",  # azul-acinzentado
-    "privilege_escalation": "#f72585",  # rosa
-    "exfiltration":         "#7209b7",  # roxo escuro
-    "benign":               "#90be6d",  # verde
-    "outro":                "#adb5bd",  # cinza
+    "sql_injection": "#e63946", "nosql_injection": "#f3722c", "brute_force": "#f9c74f",
+    "ddos": "#9c27b0", "buffer_overflow": "#577590", "privilege_escalation": "#f72585",
+    "exfiltration": "#7209b7", "benign": "#90be6d", "outro": "#adb5bd",
 }
+MODEL_COLORS = {"qwen2.5": "#4361ee", "llama3.1": "#f72585", "gemma3": "#43aa8b"}
+OK_RED, OK_GREEN = "#e63946", "#2a9d8f"
 
 
 # ============================================================================
-# CONEXÃO E HELPERS
+# DADOS
 # ============================================================================
-
 
 @st.cache_resource
-def get_db_path():
-    """Usa o banco vivo localmente; cai no snapshot demo no deploy (cloud).
-
-    `access_control.db` é gitignored — em produção (Streamlit Cloud) ele não
-    existe, então usamos `demo_data.db` commitado para a demonstração do TCC.
-    """
+def get_db_path() -> Path:
     root = Path(__file__).parent.parent
-    live = root / "access_control.db"
-    demo = root / "demo_data.db"
+    live, demo = root / "access_control.db", root / "demo_data.db"
     return live if live.exists() else demo
 
-
-def connect():
-    """Connection nova por request — evita conflitos com escritas concorrentes."""
+def _conn():
     db = get_db_path()
     if not db.exists():
-        st.error(
-            "Banco SQLite não encontrado. Localmente rode "
-            "`python -m access_defense.cli init-db`; no deploy, garanta que "
-            "`demo_data.db` esteja commitado."
-        )
+        st.error("Banco SQLite não encontrado. Rode `python -m access_defense.cli init-db`.")
         st.stop()
-    conn = sqlite3.connect(str(db))
-    conn.row_factory = sqlite3.Row
-    return conn
+    c = sqlite3.connect(str(db)); c.row_factory = sqlite3.Row
+    return c
 
-
-def fetch_df(query: str, params: tuple = ()) -> pd.DataFrame:
-    with connect() as conn:
-        rows = conn.execute(query, params).fetchall()
+def q(sql: str, params: tuple = ()) -> pd.DataFrame:
+    try:
+        with _conn() as c:
+            rows = c.execute(sql, params).fetchall()
+    except sqlite3.OperationalError:
+        return pd.DataFrame()
     return pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
 
-
-# ----------------------------------------------------------------------------
-# Detecção de categoria de ataque (heurística — espelha agent_loop.SYSTEM_PROMPT)
-# ----------------------------------------------------------------------------
+def scalar(sql: str, params: tuple = ()) -> int:
+    df = q(sql, params)
+    return int(df.iloc[0, 0]) if not df.empty else 0
 
 CATEGORY_PATTERNS = [
-    ("sql_injection",        re.compile(r"(union\s+select|or\s+1=1|--|drop\s+table|information_schema|;\s*select)", re.I)),
-    ("nosql_injection",      re.compile(r"(\$ne|\$gt|\$where|\$regex|\$exists)", re.I)),
-    ("buffer_overflow",      re.compile(r".{256,}", re.S)),
-    ("exfiltration",         re.compile(r"select\s+.*password|select\s+.*from\s+users\b", re.I)),
+    ("sql_injection", re.compile(r"(union\s+select|or\s+1=1|--|drop\s+table|information_schema|;\s*select)", re.I)),
+    ("nosql_injection", re.compile(r"(\$ne|\$gt|\$where|\$regex|\$exists)", re.I)),
+    ("buffer_overflow", re.compile(r".{256,}", re.S)),
+    ("exfiltration", re.compile(r"select\s+.*password|select\s+.*from\s+users\b", re.I)),
     ("privilege_escalation", re.compile(r"\bsalarios\b", re.I)),
 ]
 
-
 def categorize(payload: str) -> str:
-    """Classifica payload em uma categoria de ataque. 'benign' se nenhuma bate."""
     if not payload:
         return "benign"
     for name, pat in CATEGORY_PATTERNS:
@@ -110,563 +80,246 @@ def categorize(payload: str) -> str:
             return name
     return "benign"
 
-
-def categorize_logs(df: pd.DataFrame) -> pd.DataFrame:
-    """Adiciona coluna 'categoria' ao DataFrame de access_logs."""
+def with_category(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     df = df.copy()
     df["categoria"] = df["record_filter"].fillna("").apply(categorize)
+    df["is_blocked"] = df["denial_reason"].fillna("").str.startswith(("ip_blocked", "user_locked"))
+    df["is_malicious"] = df["categoria"] != "benign"
+    return df
+
+@st.cache_data(ttl=10)
+def load_battery() -> pd.DataFrame:
+    path = Path(__file__).parent.parent / "results" / "battery_results.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(path)
+    for col in ("breaches", "events", "category_ok", "acted", "latency_s"):
+        if col in df:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
 
-# ----------------------------------------------------------------------------
-# KPIs
-# ----------------------------------------------------------------------------
+# ============================================================================
+# CABEÇALHO
+# ============================================================================
 
+st.title("🛡️ Defesa Contra Acessos Anômalos")
+left, right = st.columns([3, 1])
+left.caption("Ataques HTTP reais a Postgres + MongoDB; agentes LLM (qwen2.5, llama3.1) "
+             "detectam e respondem em tempo real — bloqueiam IP, travam usuário, alertam.")
+with right:
+    if st.button("🔄 Atualizar", use_container_width=True):
+        st.cache_resource.clear(); st.cache_data.clear(); st.rerun()
+    st.caption(f"{datetime.now():%H:%M:%S} · `{get_db_path().name}`")
 
-def get_kpis() -> dict:
-    with connect() as conn:
-        def count(sql, params=()):
-            try:
-                return conn.execute(sql, params).fetchone()[0]
-            except sqlite3.OperationalError:
-                return 0
-
-        return {
-            "total_requests": count("SELECT COUNT(*) FROM access_logs"),
-            "blocked_403":    count("SELECT COUNT(*) FROM access_logs WHERE denial_reason LIKE 'ip_blocked%' OR denial_reason LIKE 'user_locked%'"),
-            "ips_blocked":    count("SELECT COUNT(*) FROM blocked_ips WHERE expires_at IS NULL OR expires_at > ?", (datetime.utcnow().isoformat(),)),
-            "users_locked":   count("SELECT COUNT(*) FROM locked_users"),
-            "agent_actions":  count("SELECT COUNT(*) FROM ai_actions"),
-            "agent_models":   conn.execute("SELECT COUNT(DISTINCT agent_name) FROM ai_actions").fetchone()[0],
-            "benchmark_runs": count("SELECT COUNT(*) FROM benchmark_runs"),
-        }
+tab_overview, tab_defense, tab_models, tab_bench = st.tabs(
+    ["🏠 Visão Geral", "⚔️ Ataques & Defesa", "🤖 Comparação de Modelos", "⚡ Benchmark"])
 
 
 # ============================================================================
-# LAYOUT PRINCIPAL
+# 1. VISÃO GERAL
 # ============================================================================
 
-st.title("🛡️ Dashboard de Defesa Contra Acessos Anômalos")
-st.caption(
-    "Monitoramento em tempo real de ataques HTTP a Postgres + MongoDB com "
-    "resposta autônoma de agentes LLM (qwen2.5, gemma3). "
-    "Os dados são atualizados a cada recarga da página."
-)
+with tab_overview:
+    total = scalar("SELECT COUNT(*) FROM access_logs")
+    blocked = scalar("SELECT COUNT(*) FROM access_logs WHERE denial_reason LIKE 'ip_blocked%' OR denial_reason LIKE 'user_locked%'")
+    ips = scalar("SELECT COUNT(*) FROM blocked_ips WHERE expires_at IS NULL OR expires_at > ?", (datetime.utcnow().isoformat(),))
+    users = scalar("SELECT COUNT(*) FROM locked_users")
+    actions = scalar("SELECT COUNT(*) FROM ai_actions")
+    block_pct = (blocked / total * 100) if total else 0
 
-col_refresh, col_info = st.columns([1, 5])
-with col_refresh:
-    if st.button("🔄 Atualizar dados", use_container_width=True):
-        st.cache_resource.clear()
-        st.rerun()
-with col_info:
-    st.caption(f"Última leitura: **{datetime.now().strftime('%H:%M:%S')}**  •  Banco: `{get_db_path().name}`")
-
-kpis = get_kpis()
-
-st.divider()
-
-
-tab_home, tab_logs, tab_defense, tab_attacks, tab_bench = st.tabs([
-    "🏠 Visão Geral",
-    "📝 Acessos HTTP",
-    "🛡️ Defesa Ativa",
-    "📊 Análise de Ataques",
-    "⚡ Benchmark PG vs Mongo",
-])
-
-
-# ============================================================================
-# TAB 1: VISÃO GERAL
-# ============================================================================
-
-with tab_home:
-    st.markdown("### Visão geral do sistema")
-    st.caption(
-        "KPIs agregados de toda a sessão. Cada cartão mostra um número-chave; "
-        "passe o mouse sobre o ⓘ para ver o que ele significa."
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric(
-        "Requests HTTP recebidos",
-        f"{kpis['total_requests']:,}",
-        help="Total de chamadas ao servidor vulnerável desde o último reset.",
-    )
-    c2.metric(
-        "Bloqueados pré-execução",
-        f"{kpis['blocked_403']:,}",
-        help="Requests que receberam HTTP 403 porque o IP/usuário já estava na lista negra do agente.",
-    )
-    c3.metric(
-        "IPs bloqueados (ativos)",
-        f"{kpis['ips_blocked']:,}",
-        help="IPs em quarentena agora — ainda dentro do TTL definido pela IA.",
-    )
-    c4.metric(
-        "Usuários travados",
-        f"{kpis['users_locked']:,}",
-        help="Contas em lock_user — login sempre falha enquanto a entrada existir.",
-    )
-
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric(
-        "Ações totais do agente IA",
-        f"{kpis['agent_actions']:,}",
-        help="Quantas vezes o LLM chamou uma das tools (block_ip, lock_user, flag, no_action).",
-    )
-    c6.metric(
-        "Modelos LLM usados",
-        f"{kpis['agent_models']}",
-        help="Quantos modelos distintos já contribuíram (ex.: qwen2.5 + gemma3 = 2).",
-    )
-    c7.metric(
-        "Runs de benchmark",
-        f"{kpis['benchmark_runs']}",
-        help="Quantas medições de latência Postgres × Mongo estão salvas em benchmark_runs.",
-    )
-    if kpis["total_requests"] > 0:
-        block_pct = kpis["blocked_403"] / kpis["total_requests"] * 100
-    else:
-        block_pct = 0
-    c8.metric(
-        "Taxa de bloqueio",
-        f"{block_pct:.1f}%",
-        help="Bloqueados / total. Sobe à medida que o agente identifica atacantes e a lista negra cresce.",
-    )
+    c = st.columns(5)
+    c[0].metric("Requests HTTP", f"{total:,}")
+    c[1].metric("Bloqueados (403)", f"{blocked:,}", help="IP/usuário já em quarentena → 403 antes da query.")
+    c[2].metric("IPs bloqueados", f"{ips:,}")
+    c[3].metric("Ações da IA", f"{actions:,}")
+    c[4].metric("Taxa de bloqueio", f"{block_pct:.0f}%")
 
     st.divider()
-
-    st.markdown("#### Como ler esta dashboard")
-    st.info(
-        "**📝 Acessos HTTP** lista cada requisição com a categoria de ataque inferida pelo payload. "
-        "**🛡️ Defesa Ativa** mostra o estado atual da quarentena e o que a IA decidiu. "
-        "**📊 Análise de Ataques** agrega por categoria e mostra a eficácia da defesa. "
-        "**⚡ Benchmark** compara Postgres vs MongoDB nas mesmas consultas — para justificar a escolha de stack no TCC."
-    )
-
-
-# ============================================================================
-# TAB 2: ACESSOS HTTP
-# ============================================================================
-
-with tab_logs:
-    st.markdown("### Histórico de requisições HTTP")
-    st.caption(
-        "Cada linha = uma chamada ao `server.py`. A coluna **categoria** é "
-        "inferida pelo payload (mesma taxonomia que o agente usa)."
-    )
-
-    df_all = fetch_df("""
-        SELECT id, created_at, username, ip_address, operation,
-               table_name, record_filter, rows_returned, success, denial_reason
-        FROM access_logs
-        ORDER BY id DESC
-        LIMIT 1000
-    """)
-
-    if df_all.empty:
-        st.info("Nenhum acesso registrado ainda. Rode o `attacker.py` para gerar tráfego.")
+    st.subheader("Ataque bloqueado vs. vazado, por categoria")
+    logs = with_category(q("SELECT ip_address, record_filter, success, denial_reason FROM access_logs"))
+    mal = logs[logs["is_malicious"]] if not logs.empty else logs
+    if mal.empty:
+        st.info("Sem tráfego malicioso ainda. Rode `attacker.py` para gerar ataques.")
     else:
-        df_all = categorize_logs(df_all)
-
-        col_a, col_b, col_c = st.columns([2, 2, 1])
-        with col_a:
-            usuarios = ["Todos"] + sorted(df_all["username"].dropna().unique().tolist())
-            user_filter = st.selectbox("Filtrar por usuário:", usuarios)
-        with col_b:
-            cats = ["Todas"] + sorted(df_all["categoria"].unique().tolist())
-            cat_filter = st.selectbox("Filtrar por categoria de ataque:", cats)
-        with col_c:
-            only_blocked = st.checkbox("Só bloqueados (403)")
-
-        view = df_all
-        if user_filter != "Todos":
-            view = view[view["username"] == user_filter]
-        if cat_filter != "Todas":
-            view = view[view["categoria"] == cat_filter]
-        if only_blocked:
-            view = view[view["denial_reason"].fillna("").str.startswith(("ip_blocked", "user_locked"))]
-
-        # Tabela legível (renomeia colunas)
-        readable = view[[
-            "id", "created_at", "username", "ip_address", "operation",
-            "table_name", "categoria", "rows_returned", "success", "denial_reason",
-        ]].rename(columns={
-            "id": "Log #",
-            "created_at": "Quando",
-            "username": "Usuário",
-            "ip_address": "IP",
-            "operation": "Operação",
-            "table_name": "Tabela",
-            "categoria": "Categoria",
-            "rows_returned": "Linhas",
-            "success": "Sucesso",
-            "denial_reason": "Motivo da negação",
-        })
-
-        st.dataframe(readable, use_container_width=True, height=420, hide_index=True)
-        st.caption(f"Mostrando **{len(view)}** de **{len(df_all)}** acessos registrados.")
-
-        st.divider()
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("#### Distribuição por categoria")
-            cat_counts = view["categoria"].value_counts().reset_index()
-            cat_counts.columns = ["Categoria", "Quantidade"]
-            fig = px.bar(
-                cat_counts,
-                x="Categoria", y="Quantidade",
-                color="Categoria",
-                color_discrete_map=ATTACK_COLORS,
-                text="Quantidade",
-            )
-            fig.update_traces(textposition="outside")
-            fig.update_layout(showlegend=False, height=320, margin=dict(t=10, b=10))
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(
-                "Quantas requisições foram classificadas em cada categoria de ataque. "
-                "Barras altas indicam padrões repetidos."
-            )
-
-        with col2:
-            st.markdown("#### Operações HTTP")
-            op_counts = view["operation"].value_counts().reset_index()
-            op_counts.columns = ["Operação", "Quantidade"]
-            fig = px.pie(
-                op_counts,
-                values="Quantidade", names="Operação",
-                hole=0.4,
-                color_discrete_sequence=px.colors.qualitative.Set2,
-            )
-            fig.update_layout(height=320, margin=dict(t=10, b=10))
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(
-                "LOGIN = `/pg/login` ou `/mongo/login`. SEARCH = `/pg/search`. "
-                "RAW_SQL = `/pg/query` (pior caso, exfiltração)."
-            )
+        agg = mal.groupby("categoria").apply(
+            lambda g: pd.Series({
+                "Vazou (atacante obteve dados)": int(((g["success"] == 1) & (g["denial_reason"].isna() | ~g["is_blocked"])).sum()),
+                "Bloqueado (403)": int(g["is_blocked"].sum()),
+            }), include_groups=False).reset_index()
+        m = agg.melt(id_vars="categoria", var_name="Resultado", value_name="Quantidade")
+        fig = px.bar(m, x="categoria", y="Quantidade", color="Resultado", barmode="group",
+                     color_discrete_map={"Vazou (atacante obteve dados)": OK_RED, "Bloqueado (403)": OK_GREEN})
+        fig.update_layout(height=360, margin=dict(t=10, b=10), xaxis_title="", legend_title_text="")
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Verde ≫ vermelho = defesa madura naquela categoria. A defesa atua **antes** da query.")
 
 
 # ============================================================================
-# TAB 3: DEFESA ATIVA
+# 2. ATAQUES & DEFESA
 # ============================================================================
 
 with tab_defense:
-    st.markdown("### Estado da defesa autônoma")
-    st.caption(
-        "Decisões tomadas pelo agente LLM e quem está em quarentena agora. "
-        "A IA chama `block_ip`, `lock_user`, `flag_for_audit` ou `no_action` "
-        "para cada batch de eventos suspeitos."
-    )
-
-    df_actions = fetch_df("""
-        SELECT id, created_at, agent_name, tool_name, arguments, reason, applied, error
-        FROM ai_actions
-        ORDER BY id DESC
-        LIMIT 500
-    """)
-
-    if df_actions.empty:
-        st.info("Nenhuma ação do agente ainda. Rode `python -m access_defense.agent_loop --model qwen2.5`.")
+    logs = with_category(q("""SELECT id, created_at, username, ip_address, operation, table_name,
+                                     record_filter, rows_returned, success, denial_reason
+                              FROM access_logs ORDER BY id DESC LIMIT 1000"""))
+    if logs.empty:
+        st.info("Nenhum acesso registrado. Rode `attacker.py`.")
     else:
-        # Extrai categoria do reason
-        df_actions["categoria"] = df_actions["reason"].fillna("").str.extract(r"^(\w+)")[0].fillna("outro")
+        f1, f2, f3 = st.columns([2, 2, 1])
+        user_f = f1.selectbox("Usuário", ["Todos"] + sorted(logs["username"].dropna().unique()))
+        cat_f = f2.selectbox("Categoria", ["Todas"] + sorted(logs["categoria"].unique()))
+        only_b = f3.checkbox("Só 403")
+        view = logs
+        if user_f != "Todos": view = view[view["username"] == user_f]
+        if cat_f != "Todas": view = view[view["categoria"] == cat_f]
+        if only_b: view = view[view["is_blocked"]]
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Ações totais", len(df_actions))
-        c2.metric("block_ip", int((df_actions["tool_name"] == "block_ip").sum()))
-        c3.metric("lock_user", int((df_actions["tool_name"] == "lock_user").sum()))
-        c4.metric("flag_for_audit", int((df_actions["tool_name"] == "flag_for_audit").sum()))
+        st.dataframe(
+            view[["id", "created_at", "username", "ip_address", "operation", "categoria",
+                  "rows_returned", "success", "denial_reason"]].rename(columns={
+                "id": "Log", "created_at": "Quando", "username": "Usuário", "ip_address": "IP",
+                "operation": "Op", "categoria": "Categoria", "rows_returned": "Linhas",
+                "success": "OK", "denial_reason": "Negação"}),
+            use_container_width=True, height=300, hide_index=True)
+        st.caption(f"{len(view)} de {len(logs)} acessos. Categoria inferida do payload (mesma taxonomia do agente).")
 
         st.divider()
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("#### Ferramentas chamadas pela IA")
-            tool_counts = df_actions["tool_name"].value_counts().reset_index()
-            tool_counts.columns = ["Ferramenta", "Quantidade"]
-            fig = px.bar(
-                tool_counts,
-                x="Ferramenta", y="Quantidade",
-                text="Quantidade",
-                color="Ferramenta",
-                color_discrete_sequence=px.colors.qualitative.Bold,
-            )
-            fig.update_traces(textposition="outside")
-            fig.update_layout(showlegend=False, height=320, margin=dict(t=10, b=10))
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(
-                "Mostra quantas vezes cada ferramenta foi acionada. "
-                "block_ip e lock_user travam o atacante; flag_for_audit só registra para investigação."
-            )
-
-        with col2:
-            st.markdown("#### Ações por modelo LLM")
-            model_counts = df_actions["agent_name"].value_counts().reset_index()
-            model_counts.columns = ["Modelo", "Quantidade"]
-            fig = px.bar(
-                model_counts,
-                x="Modelo", y="Quantidade",
-                text="Quantidade",
-                color="Modelo",
-                color_discrete_sequence=px.colors.qualitative.Set1,
-            )
-            fig.update_traces(textposition="outside")
-            fig.update_layout(showlegend=False, height=320, margin=dict(t=10, b=10))
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(
-                "Comparação entre modelos. Diferenças refletem capacidade de tool-calling: "
-                "qwen2.5 suporta nativo, gemma3 usa fallback JSON e tende a agir menos."
-            )
-
-        st.markdown("#### Histórico recente de ações")
-        recent = df_actions.head(50)[["id", "created_at", "agent_name", "tool_name", "reason", "applied", "error"]].rename(columns={
-            "id": "Ação #",
-            "created_at": "Quando",
-            "agent_name": "Modelo",
-            "tool_name": "Ferramenta",
-            "reason": "Motivo (categoria + evidência)",
-            "applied": "Aplicada",
-            "error": "Erro",
-        })
-        st.dataframe(recent, use_container_width=True, height=320, hide_index=True)
-        st.caption(
-            "Últimas 50 decisões. **Aplicada=1** significa que a tool foi executada com sucesso. "
-            "O **Motivo** começa com a categoria do ataque (sql_injection, brute_force, etc.)."
-        )
-
-    st.divider()
-
-    st.markdown("#### Quarentena atual")
-    col_ip, col_user = st.columns(2)
-
-    with col_ip:
-        st.markdown("**🚫 IPs bloqueados**")
-        df_ips = fetch_df("SELECT ip_address, reason, created_at, expires_at FROM blocked_ips ORDER BY created_at DESC")
-        if df_ips.empty:
-            st.caption("Nenhum IP em quarentena.")
+        st.subheader("O que a IA decidiu")
+        acts = q("""SELECT agent_name, tool_name, reason, applied, created_at
+                    FROM ai_actions ORDER BY id DESC LIMIT 500""")
+        if acts.empty:
+            st.info("Nenhuma ação do agente. Rode `python -m access_defense.agent_loop --model qwen2.5`.")
         else:
-            df_ips.columns = ["IP", "Motivo", "Bloqueado em", "Expira em"]
-            st.dataframe(df_ips, use_container_width=True, hide_index=True, height=200)
+            k = st.columns(4)
+            k[0].metric("Ações", len(acts))
+            for i, t in enumerate(("block_ip", "lock_user", "flag_for_audit")):
+                k[i + 1].metric(t, int((acts["tool_name"] == t).sum()))
+            cc = st.columns(2)
+            tc = acts["tool_name"].value_counts().reset_index()
+            tc.columns = ["Ferramenta", "N"]
+            fig = px.bar(tc, x="Ferramenta", y="N", color="Ferramenta", text="N",
+                         color_discrete_sequence=px.colors.qualitative.Bold)
+            fig.update_layout(height=280, margin=dict(t=10, b=10), showlegend=False)
+            cc[0].plotly_chart(fig, use_container_width=True)
+            mc = acts["agent_name"].value_counts().reset_index()
+            mc.columns = ["Modelo", "N"]
+            fig = px.bar(mc, x="Modelo", y="N", color="Modelo", text="N",
+                         color_discrete_map=MODEL_COLORS)
+            fig.update_layout(height=280, margin=dict(t=10, b=10), showlegend=False)
+            cc[1].plotly_chart(fig, use_container_width=True)
+            st.dataframe(
+                acts.head(30)[["created_at", "agent_name", "tool_name", "reason", "applied"]].rename(columns={
+                    "created_at": "Quando", "agent_name": "Modelo", "tool_name": "Ferramenta",
+                    "reason": "Motivo", "applied": "Aplicada"}),
+                use_container_width=True, height=240, hide_index=True)
 
-    with col_user:
-        st.markdown("**🔒 Usuários travados**")
-        df_users = fetch_df("SELECT username, reason, created_at, expires_at FROM locked_users ORDER BY created_at DESC")
-        if df_users.empty:
-            st.caption("Nenhum usuário travado.")
-        else:
-            df_users.columns = ["Usuário", "Motivo", "Travado em", "Expira em"]
-            st.dataframe(df_users, use_container_width=True, hide_index=True, height=200)
+        st.divider()
+        qi, qu = st.columns(2)
+        with qi:
+            st.subheader("🚫 IPs em quarentena")
+            dfi = q("SELECT ip_address, reason, expires_at FROM blocked_ips ORDER BY created_at DESC")
+            st.dataframe(dfi, use_container_width=True, hide_index=True, height=180) if not dfi.empty else st.caption("Nenhum.")
+        with qu:
+            st.subheader("🔒 Usuários travados")
+            dfu = q("SELECT username, reason, expires_at FROM locked_users ORDER BY created_at DESC")
+            st.dataframe(dfu, use_container_width=True, hide_index=True, height=180) if not dfu.empty else st.caption("Nenhum.")
 
-    st.caption(
-        "Estas listas alimentam o middleware do `server.py`. "
-        "Qualquer request com IP/usuário aqui recebe HTTP 403 antes de a query ser executada."
-    )
+        st.divider()
+        st.subheader("Linha do tempo dos ataques")
+        tl = with_category(q("SELECT created_at, record_filter, denial_reason, success FROM access_logs ORDER BY id ASC"))
+        tl = tl[tl["is_malicious"]].copy() if not tl.empty else tl
+        if not tl.empty:
+            tl["created_at"] = pd.to_datetime(tl["created_at"], errors="coerce")
+            series = tl.set_index("created_at").resample("1min").size().reset_index()
+            series.columns = ["Quando", "Ataques/min"]
+            fig = px.line(series, x="Quando", y="Ataques/min", markers=True)
+            fig.update_layout(height=260, margin=dict(t=10, b=10))
+            st.plotly_chart(fig, use_container_width=True)
 
 
 # ============================================================================
-# TAB 4: ANÁLISE DE ATAQUES
+# 3. COMPARAÇÃO DE MODELOS (battery CSV)
 # ============================================================================
 
-with tab_attacks:
-    st.markdown("### Análise dos ataques registrados")
-    st.caption(
-        "Visão analítica: que tipos de ataque foram detectados, quando aconteceram, "
-        "e qual a taxa de sucesso/bloqueio de cada categoria."
-    )
-
-    df_logs = fetch_df("""
-        SELECT id, created_at, ip_address, operation, record_filter,
-               rows_returned, success, denial_reason
-        FROM access_logs
-        ORDER BY id ASC
-    """)
-
-    if df_logs.empty:
-        st.info("Sem dados ainda. Gere tráfego com `attacker.py`.")
+with tab_models:
+    bat = load_battery()
+    if bat.empty:
+        st.info("Sem dados de bateria. Gere com `python -m access_defense.battery --runs 10` "
+                "(grava em `results/battery_results.csv`).")
     else:
-        df_logs = categorize_logs(df_logs)
-        df_logs["is_blocked"] = df_logs["denial_reason"].fillna("").str.startswith(("ip_blocked", "user_locked"))
-        df_logs["is_malicious"] = df_logs["categoria"] != "benign"
-        df_logs["created_at"] = pd.to_datetime(df_logs["created_at"], errors="coerce")
+        runs = bat["run_id"].nunique()
+        st.caption(f"{len(bat)} medições · {runs} sessões (run_id) · acurácia = categoria inferida == esperada.")
 
-        # KPIs analíticos
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total de acessos", len(df_logs))
-        c2.metric("Maliciosos", int(df_logs["is_malicious"].sum()),
-                  help="Requests cuja categoria não é 'benign'.")
-        c3.metric("Bloqueados", int(df_logs["is_blocked"].sum()),
-                  help="Requests com HTTP 403 (IP ou usuário em quarentena).")
-        success_attacks = int(df_logs[df_logs["is_malicious"] & (df_logs["success"] == 1)].shape[0])
-        c4.metric("Ataques bem-sucedidos", success_attacks,
-                  help="Maliciosos que ainda assim retornaram resultado (atacante passou).")
+        summ = bat.groupby("model").agg(
+            acuracia=("category_ok", "mean"), acao=("acted", "mean"),
+            latencia=("latency_s", "mean"), n=("category_ok", "size")).reset_index()
+        summ["acuracia"] *= 100; summ["acao"] *= 100
 
-        st.divider()
-
-        st.markdown("#### Categoria de ataque × resultado")
-        agg = df_logs[df_logs["is_malicious"]].groupby("categoria").agg(
-            total=("id", "count"),
-            sucesso_ataque=("success", lambda s: int((s == 1).sum())),
-            bloqueado=("is_blocked", lambda s: int(s.sum())),
-        ).reset_index()
-        if not agg.empty:
-            agg["taxa_bloqueio_%"] = (agg["bloqueado"] / agg["total"] * 100).round(1)
-            agg = agg.rename(columns={
-                "categoria": "Categoria",
-                "total": "Total",
-                "sucesso_ataque": "Atacante conseguiu dados",
-                "bloqueado": "Bloqueado (403)",
-                "taxa_bloqueio_%": "Taxa de bloqueio (%)",
-            })
-            st.dataframe(agg, use_container_width=True, hide_index=True)
-            st.caption(
-                "**Total**: quantos ataques desta categoria chegaram ao servidor. "
-                "**Atacante conseguiu dados**: a query rodou e retornou resultado. "
-                "**Bloqueado**: defesa interceptou antes da query. "
-                "Quanto maior a **Taxa de bloqueio**, mais efetiva foi a IA contra essa categoria."
-            )
-
-            fig = px.bar(
-                agg.melt(id_vars=["Categoria"], value_vars=["Atacante conseguiu dados", "Bloqueado (403)"]),
-                x="Categoria", y="value", color="variable",
-                barmode="group",
-                labels={"value": "Quantidade", "variable": "Resultado"},
-                color_discrete_map={"Atacante conseguiu dados": "#e63946", "Bloqueado (403)": "#2a9d8f"},
-            )
-            fig.update_layout(height=380, margin=dict(t=10, b=10), legend_title_text="")
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(
-                "Comparação lado a lado: **vermelho** = atacante passou, **verde** = defesa bloqueou. "
-                "Categorias onde verde >> vermelho indicam defesa madura; o oposto pede atenção."
-            )
+        cols = st.columns(len(summ))
+        for i, r in summ.iterrows():
+            with cols[i]:
+                st.markdown(f"### {r['model']}")
+                st.metric("Acurácia de categoria", f"{r['acuracia']:.0f}%")
+                st.metric("Agiu (block/lock)", f"{r['acao']:.0f}%")
+                st.metric("Latência média", f"{r['latencia']:.1f} s")
 
         st.divider()
+        g = bat.groupby(["model", "attack"]).agg(
+            cat_ok=("category_ok", "mean"), acted=("acted", "mean"),
+            lat=("latency_s", "mean")).reset_index()
+        g["cat_ok"] *= 100; g["acted"] *= 100
 
-        st.markdown("#### Linha do tempo dos ataques")
-        timeline = df_logs[df_logs["is_malicious"]].set_index("created_at").resample("1min").size().reset_index()
-        timeline.columns = ["Quando", "Ataques por minuto"]
-        if not timeline.empty:
-            fig = px.line(
-                timeline, x="Quando", y="Ataques por minuto",
-                markers=True,
-            )
-            fig.update_layout(height=320, margin=dict(t=10, b=10))
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("Acurácia de categoria (%) por ataque")
+            fig = px.bar(g, x="attack", y="cat_ok", color="model", barmode="group",
+                         color_discrete_map=MODEL_COLORS, text=g["cat_ok"].round(0))
+            fig.update_layout(height=320, margin=dict(t=10, b=10), xaxis_title="",
+                              yaxis_title="%", legend_title_text="")
             st.plotly_chart(fig, use_container_width=True)
-            st.caption(
-                "Volume de requests maliciosos por minuto. "
-                "Picos correspondem a rodadas de `attacker.py`. "
-                "Períodos planos depois de um pico = defesa funcionando (IPs já bloqueados não geram mais logs)."
-            )
+        with c2:
+            st.subheader("Agiu (%) por ataque")
+            fig = px.bar(g, x="attack", y="acted", color="model", barmode="group",
+                         color_discrete_map=MODEL_COLORS, text=g["acted"].round(0))
+            fig.update_layout(height=320, margin=dict(t=10, b=10), xaxis_title="",
+                              yaxis_title="%", legend_title_text="")
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("Latência média (s) por ataque")
+        fig = px.bar(g, x="attack", y="lat", color="model", barmode="group",
+                     color_discrete_map=MODEL_COLORS, text=g["lat"].round(1))
+        fig.update_layout(height=300, margin=dict(t=10, b=10), xaxis_title="",
+                          yaxis_title="s", legend_title_text="")
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Trade-off central: precisão (acurácia alta) vs. recall (age em quase tudo) vs. latência.")
 
 
 # ============================================================================
-# TAB 5: BENCHMARK POSTGRES vs MONGO
+# 4. BENCHMARK PG × MONGO
 # ============================================================================
 
 with tab_bench:
-    st.markdown("### Benchmark de performance: Postgres × MongoDB")
-    st.caption(
-        "Comparação direta da latência de cada backend nas mesmas workloads. "
-        "Resultados gerados por `python -m access_defense.benchmark`."
-    )
-
-    df_bench = fetch_df("""
-        SELECT id, created_at, run_id, backend, workload, iterations,
-               avg_ms, min_ms, max_ms, p95_ms, error_count, notes
-        FROM benchmark_runs
-        ORDER BY id DESC
-    """)
-
-    if df_bench.empty:
-        st.info("Nenhum benchmark rodado. Execute: `python -m access_defense.benchmark --iterations 200`")
+    b = q("""SELECT run_id, backend, workload, avg_ms, p95_ms
+             FROM benchmark_runs ORDER BY id DESC""")
+    if b.empty:
+        st.info("Nenhum benchmark. Rode `python -m access_defense.benchmark --iterations 200`.")
     else:
-        # Filtro de run
-        run_options = ["Mais recente de cada workload"] + sorted(df_bench["run_id"].unique().tolist(), reverse=True)
-        chosen = st.selectbox("Selecionar run:", run_options)
+        opts = ["Mais recente por workload"] + sorted(b["run_id"].unique(), reverse=True)
+        chosen = st.selectbox("Run", opts)
+        view = (b.drop_duplicates(subset=["backend", "workload"]) if chosen == opts[0]
+                else b[b["run_id"] == chosen])
+        c1, c2 = st.columns(2)
+        for col, metric, title in ((c1, "avg_ms", "Latência média (ms)"), (c2, "p95_ms", "Latência p95 (ms)")):
+            fig = px.bar(view, x="workload", y=metric, color="backend", barmode="group",
+                         text=view[metric].round(1),
+                         color_discrete_map={"postgres": "#336791", "mongo": "#47A248"})
+            fig.update_layout(height=340, margin=dict(t=10, b=10), xaxis_title="", legend_title_text="")
+            col.subheader(title); col.plotly_chart(fig, use_container_width=True)
+        st.caption("Barras menores = backend mais rápido. p95 revela a cauda (requests lentos).")
 
-        if chosen == "Mais recente de cada workload":
-            view = (
-                df_bench.sort_values("id", ascending=False)
-                .drop_duplicates(subset=["backend", "workload"])
-            )
-        else:
-            view = df_bench[df_bench["run_id"] == chosen]
-
-        # Pivot legível
-        pivot = view.pivot_table(
-            index="workload",
-            columns="backend",
-            values=["avg_ms", "p95_ms"],
-        ).round(3)
-        if not pivot.empty:
-            # Multi-index → flatten
-            pivot.columns = [f"{m} ({b})" for m, b in pivot.columns]
-            pivot = pivot.reset_index().rename(columns={"workload": "Workload"})
-
-            # Adiciona coluna comparativa
-            try:
-                pivot["Mongo / Postgres (avg)"] = (pivot["avg_ms (mongo)"] / pivot["avg_ms (postgres)"]).round(2)
-            except KeyError:
-                pass
-
-            st.dataframe(pivot, use_container_width=True, hide_index=True)
-            st.caption(
-                "**avg_ms** = latência média por consulta. "
-                "**p95_ms** = 95% das consultas levaram até esse tempo. "
-                "**Mongo / Postgres** = razão; valor 2.0 significa Mongo é 2× mais lento."
-            )
-
-        st.divider()
-
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown("#### Latência média (avg) por workload")
-            fig = px.bar(
-                view,
-                x="workload", y="avg_ms",
-                color="backend",
-                barmode="group",
-                text="avg_ms",
-                color_discrete_map={"postgres": "#336791", "mongo": "#47A248"},
-                labels={"workload": "Workload", "avg_ms": "ms"},
-            )
-            fig.update_traces(textposition="outside")
-            fig.update_layout(height=380, margin=dict(t=10, b=10), legend_title_text="")
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(
-                "Barras menores = backend mais rápido na média. "
-                "Postgres costuma ganhar em buscas indexadas; Mongo pode brilhar em documentos aninhados."
-            )
-
-        with col_b:
-            st.markdown("#### Latência p95 (cauda) por workload")
-            fig = px.bar(
-                view,
-                x="workload", y="p95_ms",
-                color="backend",
-                barmode="group",
-                text="p95_ms",
-                color_discrete_map={"postgres": "#336791", "mongo": "#47A248"},
-                labels={"workload": "Workload", "p95_ms": "ms"},
-            )
-            fig.update_traces(textposition="outside")
-            fig.update_layout(height=380, margin=dict(t=10, b=10), legend_title_text="")
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(
-                "p95 mostra o pior caso entre 95% das consultas. "
-                "Um p95 muito maior que o avg revela cauda longa (alguns requests bem lentos)."
-            )
-
-
-# ============================================================================
-# RODAPÉ
-# ============================================================================
 
 st.divider()
-st.caption(
-    "🎓 **TCC — Sistema de Defesa Contra Acessos Anômalos**  •  "
-    "Stack: Flask + Postgres + MongoDB + Ollama (qwen2.5, gemma3)  •  "
-    "Repositório: <https://github.com/LealTiago-git/TCC>"
-)
+st.caption("🎓 TCC — Defesa Contra Acessos Anômalos · Flask · Postgres · MongoDB · Ollama · Streamlit")
